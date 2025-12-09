@@ -63,6 +63,7 @@ func main() {
 	var noBrowser bool
 	var antigravityLogin bool
 	var kiroLogin bool
+	var copilotLogin bool
 	var projectID string
 	var vertexImport string
 	var configPath string
@@ -79,6 +80,7 @@ func main() {
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kiroLogin, "kiro-login", false, "Login to Kiro (Amazon Q) using refresh token")
+	flag.BoolVar(&copilotLogin, "copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
@@ -455,6 +457,8 @@ func main() {
 		cmd.DoClineLogin(cfg, options)
 	} else if kiroLogin {
 		cmd.DoKiroLogin(cfg, options)
+	} else if copilotLogin {
+		cmd.DoCopilotLogin(cfg, options)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {

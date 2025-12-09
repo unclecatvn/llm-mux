@@ -106,6 +106,9 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewClaudeAuthenticator(),
 		sdkAuth.NewQwenAuthenticator(),
 		sdkAuth.NewClineAuthenticator(),
+		sdkAuth.NewKiroAuthenticator(),
+		sdkAuth.NewAntigravityAuthenticator(),
+		sdkAuth.NewCopilotAuthenticator(),
 	)
 }
 
@@ -384,6 +387,8 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 		s.coreManager.RegisterExecutor(executor.NewClineExecutor(s.cfg))
 	case "kiro":
 		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
+	case "github-copilot":
+		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -734,6 +739,9 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "kiro":
 		models = registry.GetKiroModels()
+		models = applyExcludedModels(models, excluded)
+	case "github-copilot":
+		models = registry.GetGitHubCopilotModels()
 		models = applyExcludedModels(models, excluded)
 	default:
 		log.Debugf("registerModelsForAuth: provider %s not matched, going to default", provider)

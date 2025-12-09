@@ -1028,6 +1028,34 @@ func GetClineModels() []*ModelInfo {
 	return models
 }
 
+// GetGitHubCopilotModels returns models available via GitHub Copilot API
+func GetGitHubCopilotModels() []*ModelInfo {
+	entries := []struct {
+		ID          string
+		DisplayName string
+		Description string
+		Created     int64
+	}{
+		{ID: "gpt-4.1", DisplayName: "GPT-4.1", Description: "OpenAI GPT-4.1 via GitHub Copilot", Created: 1754524800},
+		{ID: "gpt-4o", DisplayName: "GPT-4o", Description: "OpenAI GPT-4o via GitHub Copilot", Created: 1715558400},
+		{ID: "gpt-5-mini", DisplayName: "GPT-5 Mini", Description: "OpenAI GPT-5 Mini via GitHub Copilot", Created: 1762473600},
+		{ID: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max", Description: "OpenAI GPT-5.1 Codex Max via GitHub Copilot", Created: 1763424000},
+	}
+	models := make([]*ModelInfo, 0, len(entries))
+	for _, entry := range entries {
+		models = append(models, &ModelInfo{
+			ID:          entry.ID,
+			Object:      "model",
+			Created:     entry.Created,
+			OwnedBy:     "github-copilot",
+			Type:        "github-copilot",
+			DisplayName: entry.DisplayName,
+			Description: entry.Description,
+		})
+	}
+	return models
+}
+
 // GetKiroModels returns the standard Kiro (Amazon Q / CodeWhisperer) model definitions
 func GetKiroModels() []*ModelInfo {
 	entries := []struct {

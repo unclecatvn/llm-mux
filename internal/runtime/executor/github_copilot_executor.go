@@ -1,0 +1,285 @@
+package executor
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	copilotauth "github.com/nghyane/llm-mux/internal/auth/copilot"
+	"github.com/nghyane/llm-mux/internal/config"
+	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/sjson"
+)
+
+const (
+	githubCopilotBaseURL       = "https://api.githubcopilot.com"
+	githubCopilotChatPath      = "/chat/completions"
+	githubCopilotAuthType      = "github-copilot"
+	githubCopilotTokenCacheTTL = 25 * time.Minute
+	tokenExpiryBuffer          = 5 * time.Minute
+	copilotMaxScannerBuffer    = 20_971_520
+
+	copilotUserAgent     = "GithubCopilot/1.0"
+	copilotEditorVersion = "vscode/1.100.0"
+	copilotPluginVersion = "copilot/1.300.0"
+	copilotIntegrationID = "vscode-chat"
+	copilotOpenAIIntent  = "conversation-panel"
+)
+
+// GitHubCopilotExecutor handles requests to the GitHub Copilot API.
+type GitHubCopilotExecutor struct {
+	cfg   *config.Config
+	mu    sync.RWMutex
+	cache map[string]*cachedCopilotToken
+}
+
+type cachedCopilotToken struct {
+	token     string
+	expiresAt time.Time
+}
+
+func NewGitHubCopilotExecutor(cfg *config.Config) *GitHubCopilotExecutor {
+	return &GitHubCopilotExecutor{
+		cfg:   cfg,
+		cache: make(map[string]*cachedCopilotToken),
+	}
+}
+
+func (e *GitHubCopilotExecutor) Identifier() string { return githubCopilotAuthType }
+
+func (e *GitHubCopilotExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error {
+	return nil
+}
+
+func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	apiToken, errToken := e.ensureAPIToken(ctx, auth)
+	if errToken != nil {
+		return resp, errToken
+	}
+
+	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
+	defer reporter.trackFailure(ctx, &err)
+
+	from := opts.SourceFormat
+	// Translate to OpenAI format (Copilot uses OpenAI-compatible API)
+	body, errTranslate := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, nil)
+	if errTranslate != nil {
+		return resp, errTranslate
+	}
+	body = applyPayloadConfig(e.cfg, req.Model, body)
+	body, _ = sjson.SetBytes(body, "stream", false)
+
+	url := githubCopilotBaseURL + githubCopilotChatPath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return resp, err
+	}
+	e.applyHeaders(httpReq, apiToken)
+
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return resp, err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if !isHTTPSuccessCode(httpResp.StatusCode) {
+		data, _ := io.ReadAll(httpResp.Body)
+		log.Debugf("github-copilot executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		return resp, err
+	}
+
+	data, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return resp, err
+	}
+
+	detail := parseOpenAIUsage(data)
+	if detail.TotalTokens > 0 {
+		reporter.publish(ctx, detail)
+	}
+
+	// Translate response back from OpenAI format to source format
+	translatedResp, errTranslate := TranslateOpenAIResponseNonStream(e.cfg, from, data, req.Model)
+	if errTranslate != nil {
+		return resp, errTranslate
+	}
+	if translatedResp != nil {
+		resp = cliproxyexecutor.Response{Payload: translatedResp}
+	} else {
+		resp = cliproxyexecutor.Response{Payload: data}
+	}
+	reporter.ensurePublished(ctx)
+	return resp, nil
+}
+
+func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+	apiToken, errToken := e.ensureAPIToken(ctx, auth)
+	if errToken != nil {
+		return nil, errToken
+	}
+
+	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
+	defer reporter.trackFailure(ctx, &err)
+
+	from := opts.SourceFormat
+	body, errTranslate := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, nil)
+	if errTranslate != nil {
+		return nil, errTranslate
+	}
+	body = applyPayloadConfig(e.cfg, req.Model, body)
+	body, _ = sjson.SetBytes(body, "stream", true)
+	body, _ = sjson.SetBytes(body, "stream_options.include_usage", true)
+
+	url := githubCopilotBaseURL + githubCopilotChatPath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	e.applyHeaders(httpReq, apiToken)
+
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isHTTPSuccessCode(httpResp.StatusCode) {
+		data, _ := io.ReadAll(httpResp.Body)
+		_ = httpResp.Body.Close()
+		log.Debugf("github-copilot executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		return nil, err
+	}
+
+	out := make(chan cliproxyexecutor.StreamChunk)
+	stream = out
+
+	go func() {
+		defer close(out)
+		defer func() { _ = httpResp.Body.Close() }()
+
+		scanner := bufio.NewScanner(httpResp.Body)
+		scanner.Buffer(nil, copilotMaxScannerBuffer)
+		messageID := uuid.NewString()
+		streamState := &OpenAIStreamState{}
+
+		for scanner.Scan() {
+			line := scanner.Bytes()
+
+			if bytes.HasPrefix(line, dataTag) {
+				data := bytes.TrimSpace(line[5:])
+				if bytes.Equal(data, []byte("[DONE]")) {
+					continue
+				}
+				if detail, ok := parseOpenAIStreamUsage(line); ok {
+					reporter.publish(ctx, detail)
+				}
+			}
+
+			// Translate stream chunk from OpenAI format
+			translatedChunks, errTranslate := TranslateOpenAIResponseStream(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
+			if errTranslate != nil {
+				out <- cliproxyexecutor.StreamChunk{Err: errTranslate}
+				return
+			}
+			for _, chunk := range translatedChunks {
+				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+			}
+		}
+
+		if errScan := scanner.Err(); errScan != nil {
+			reporter.publishFailure(ctx)
+			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+		} else {
+			reporter.ensurePublished(ctx)
+		}
+	}()
+
+	return stream, nil
+}
+
+func (e *GitHubCopilotExecutor) CountTokens(_ context.Context, _ *cliproxyauth.Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, statusErr{code: http.StatusNotImplemented, msg: "count tokens not supported for github-copilot"}
+}
+
+func (e *GitHubCopilotExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if auth == nil {
+		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
+	}
+
+	accessToken := metaStringValue(auth.Metadata, "access_token")
+	if accessToken == "" {
+		return auth, nil
+	}
+
+	copilotAuth := copilotauth.NewCopilotAuth(e.cfg)
+	_, err := copilotAuth.GetCopilotAPIToken(ctx, accessToken)
+	if err != nil {
+		return nil, statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("github-copilot token validation failed: %v", err)}
+	}
+
+	return auth, nil
+}
+
+func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
+	if auth == nil {
+		return "", statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
+	}
+
+	accessToken := metaStringValue(auth.Metadata, "access_token")
+	if accessToken == "" {
+		return "", statusErr{code: http.StatusUnauthorized, msg: "missing github access token"}
+	}
+
+	e.mu.RLock()
+	if cached, ok := e.cache[accessToken]; ok && cached.expiresAt.After(time.Now().Add(tokenExpiryBuffer)) {
+		e.mu.RUnlock()
+		return cached.token, nil
+	}
+	e.mu.RUnlock()
+
+	copilotAuth := copilotauth.NewCopilotAuth(e.cfg)
+	apiToken, err := copilotAuth.GetCopilotAPIToken(ctx, accessToken)
+	if err != nil {
+		return "", statusErr{code: http.StatusUnauthorized, msg: fmt.Sprintf("failed to get copilot api token: %v", err)}
+	}
+
+	expiresAt := time.Now().Add(githubCopilotTokenCacheTTL)
+	if apiToken.ExpiresAt > 0 {
+		expiresAt = time.Unix(apiToken.ExpiresAt, 0)
+	}
+	e.mu.Lock()
+	e.cache[accessToken] = &cachedCopilotToken{
+		token:     apiToken.Token,
+		expiresAt: expiresAt,
+	}
+	e.mu.Unlock()
+
+	return apiToken.Token, nil
+}
+
+func (e *GitHubCopilotExecutor) applyHeaders(r *http.Request, apiToken string) {
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+apiToken)
+	r.Header.Set("Accept", "application/json")
+	r.Header.Set("User-Agent", copilotUserAgent)
+	r.Header.Set("Editor-Version", copilotEditorVersion)
+	r.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
+	r.Header.Set("Openai-Intent", copilotOpenAIIntent)
+	r.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
+	r.Header.Set("X-Request-Id", uuid.NewString())
+}
+
+func isHTTPSuccessCode(statusCode int) bool {
+	return statusCode >= 200 && statusCode < 300
+}
