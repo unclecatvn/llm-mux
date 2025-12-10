@@ -43,14 +43,10 @@ func GetProviderName(modelName string) []string {
 
 	modelProviders := registry.GetGlobalRegistry().GetModelProviders(cleanModelName)
 	log.Debugf("GetProviderName: modelProviders=%v", modelProviders)
-	
-	// Return only the first (highest priority) provider for the model
-	// This ensures each model is tied to a specific provider, not load-balanced across multiple
-	if len(modelProviders) > 0 {
-		return []string{modelProviders[0]}
-	}
 
-	return nil
+	// Return all providers for load balancing and fallback
+	// selectProviders() handles round-robin, pickNext() handles quota-based skipping
+	return modelProviders
 }
 
 // NormalizeIncomingModelID is the main entry point for normalizing model IDs from client requests.
