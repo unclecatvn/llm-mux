@@ -23,7 +23,6 @@ import (
 	"github.com/nghyane/llm-mux/internal/embedded"
 	"github.com/nghyane/llm-mux/internal/logging"
 	"github.com/nghyane/llm-mux/internal/managementasset"
-	"github.com/nghyane/llm-mux/internal/misc"
 	"github.com/nghyane/llm-mux/internal/store"
 	"github.com/nghyane/llm-mux/internal/usage"
 	"github.com/nghyane/llm-mux/internal/util"
@@ -250,9 +249,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to initialize postgres token store: %v", err)
 		}
-		examplePath := filepath.Join(wd, "config.example.yaml")
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-		if errBootstrap := pgStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
+		if errBootstrap := pgStoreInst.Bootstrap(ctx); errBootstrap != nil {
 			cancel()
 			log.Fatalf("failed to bootstrap postgres-backed config: %v", errBootstrap)
 		}
@@ -309,9 +307,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to initialize object token store: %v", err)
 		}
-		examplePath := filepath.Join(wd, "config.example.yaml")
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if errBootstrap := objectStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
+		if errBootstrap := objectStoreInst.Bootstrap(ctx); errBootstrap != nil {
 			cancel()
 			log.Fatalf("failed to bootstrap object-backed config: %v", errBootstrap)
 		}
@@ -345,12 +342,11 @@ func main() {
 			configFilePath = filepath.Join(gitStoreRoot, "config", "config.yaml")
 		}
 		if _, statErr := os.Stat(configFilePath); errors.Is(statErr, fs.ErrNotExist) {
-			examplePath := filepath.Join(wd, "config.example.yaml")
-			if _, errExample := os.Stat(examplePath); errExample != nil {
-				log.Fatalf("failed to find template config file: %v", errExample)
+			if errDir := os.MkdirAll(filepath.Dir(configFilePath), 0o700); errDir != nil {
+				log.Fatalf("failed to create config directory: %v", errDir)
 			}
-			if errCopy := misc.CopyConfigTemplate(examplePath, configFilePath); errCopy != nil {
-				log.Fatalf("failed to bootstrap git-backed config: %v", errCopy)
+			if errWrite := os.WriteFile(configFilePath, embedded.DefaultConfigTemplate, 0o600); errWrite != nil {
+				log.Fatalf("failed to write config from template: %v", errWrite)
 			}
 			if errCommit := gitStoreInst.PersistConfig(context.Background()); errCommit != nil {
 				log.Fatalf("failed to commit initial git-backed config: %v", errCommit)

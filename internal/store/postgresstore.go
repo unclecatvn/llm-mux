@@ -14,7 +14,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/nghyane/llm-mux/internal/misc"
+	"github.com/nghyane/llm-mux/internal/embedded"
 	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -144,11 +144,11 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 }
 
 // Bootstrap synchronizes configuration and auth records between PostgreSQL and the local workspace.
-func (s *PostgresStore) Bootstrap(ctx context.Context, exampleConfigPath string) error {
+func (s *PostgresStore) Bootstrap(ctx context.Context) error {
 	if err := s.EnsureSchema(ctx); err != nil {
 		return err
 	}
-	if err := s.syncConfigFromDatabase(ctx, exampleConfigPath); err != nil {
+	if err := s.syncConfigFromDatabase(ctx); err != nil {
 		return err
 	}
 	if err := s.syncAuthFromDatabase(ctx); err != nil {
@@ -391,25 +391,19 @@ func (s *PostgresStore) PersistConfig(ctx context.Context) error {
 	return s.persistConfig(ctx, data)
 }
 
-// syncConfigFromDatabase writes the database-stored config to disk or seeds the database from template.
-func (s *PostgresStore) syncConfigFromDatabase(ctx context.Context, exampleConfigPath string) error {
+// syncConfigFromDatabase writes the database-stored config to disk or seeds the database from embedded template.
+func (s *PostgresStore) syncConfigFromDatabase(ctx context.Context) error {
 	query := fmt.Sprintf("SELECT content FROM %s WHERE id = $1", s.fullTableName(s.cfg.ConfigTable))
 	var content string
 	err := s.db.QueryRowContext(ctx, query, defaultConfigKey).Scan(&content)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, errStat := os.Stat(s.configPath); errors.Is(errStat, fs.ErrNotExist) {
-			if exampleConfigPath != "" {
-				if errCopy := misc.CopyConfigTemplate(exampleConfigPath, s.configPath); errCopy != nil {
-					return fmt.Errorf("postgres store: copy example config: %w", errCopy)
-				}
-			} else {
-				if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
-					return fmt.Errorf("postgres store: prepare config directory: %w", errCreate)
-				}
-				if errWrite := os.WriteFile(s.configPath, []byte{}, 0o600); errWrite != nil {
-					return fmt.Errorf("postgres store: create empty config: %w", errWrite)
-				}
+			if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
+				return fmt.Errorf("postgres store: prepare config directory: %w", errCreate)
+			}
+			if errWrite := os.WriteFile(s.configPath, embedded.DefaultConfigTemplate, 0o600); errWrite != nil {
+				return fmt.Errorf("postgres store: write config from template: %w", errWrite)
 			}
 		}
 		data, errRead := os.ReadFile(s.configPath)

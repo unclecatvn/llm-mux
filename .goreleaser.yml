@@ -27,7 +27,6 @@ archives:
     files:
       - LICENSE
       - README.md
-      - config.example.yaml
 
 checksum:
   name_template: 'checksums.txt'
@@ -53,6 +52,5 @@ homebrew_casks:
     homepage: "https://github.com/nghyane/llm-mux"
     description: "Multi-provider LLM gateway with unified API"
     caveats: |
-      To use llm-mux, create a config file at ~/.config/llm-mux/config.yaml
-
-      Run with: llm-mux -config ~/.config/llm-mux/config.yaml
+      Initialize config with: llm-mux --init
+      Then start server with: llm-mux

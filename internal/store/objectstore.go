@@ -17,7 +17,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/nghyane/llm-mux/internal/misc"
+	"github.com/nghyane/llm-mux/internal/embedded"
 	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -139,14 +139,14 @@ func (s *ObjectTokenStore) AuthDir() string {
 }
 
 // Bootstrap ensures the target bucket exists and synchronizes data from the object storage backend.
-func (s *ObjectTokenStore) Bootstrap(ctx context.Context, exampleConfigPath string) error {
+func (s *ObjectTokenStore) Bootstrap(ctx context.Context) error {
 	if s == nil {
 		return fmt.Errorf("object store: not initialized")
 	}
 	if err := s.ensureBucket(ctx); err != nil {
 		return err
 	}
-	if err := s.syncConfigFromBucket(ctx, exampleConfigPath); err != nil {
+	if err := s.syncConfigFromBucket(ctx); err != nil {
 		return err
 	}
 	if err := s.syncAuthFromBucket(ctx); err != nil {
@@ -338,7 +338,7 @@ func (s *ObjectTokenStore) ensureBucket(ctx context.Context) error {
 	return nil
 }
 
-func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example string) error {
+func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context) error {
 	key := s.prefixedKey(objectStoreConfigKey)
 	_, err := s.client.StatObject(ctx, s.cfg.Bucket, key, minio.StatObjectOptions{})
 	switch {
@@ -357,17 +357,11 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context, example str
 		}
 	case isObjectNotFound(err):
 		if _, statErr := os.Stat(s.configPath); errors.Is(statErr, fs.ErrNotExist) {
-			if example != "" {
-				if errCopy := misc.CopyConfigTemplate(example, s.configPath); errCopy != nil {
-					return fmt.Errorf("object store: copy example config: %w", errCopy)
-				}
-			} else {
-				if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
-					return fmt.Errorf("object store: prepare config directory: %w", errCreate)
-				}
-				if errWrite := os.WriteFile(s.configPath, []byte{}, 0o600); errWrite != nil {
-					return fmt.Errorf("object store: create empty config: %w", errWrite)
-				}
+			if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
+				return fmt.Errorf("object store: prepare config directory: %w", errCreate)
+			}
+			if errWrite := os.WriteFile(s.configPath, embedded.DefaultConfigTemplate, 0o600); errWrite != nil {
+				return fmt.Errorf("object store: write config from template: %w", errWrite)
 			}
 		}
 		data, errRead := os.ReadFile(s.configPath)

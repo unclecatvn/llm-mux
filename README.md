@@ -107,7 +107,23 @@ curl localhost:8318/api/chat -d '{"model":"gemini-2.5-flash",...}'
 
 ## Installation
 
-### Homebrew
+### Quick Install (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nghyane/llm-mux/main/install.sh | bash
+```
+
+Options:
+```bash
+# Install specific version
+curl -fsSL https://raw.githubusercontent.com/nghyane/llm-mux/main/install.sh | bash -s -- -v v1.0.0
+
+# Install to custom directory
+curl -fsSL https://raw.githubusercontent.com/nghyane/llm-mux/main/install.sh | bash -s -- -d ~/.local/bin
+```
+
+### Homebrew (macOS)
+
 ```bash
 brew tap nghyane/tap
 brew install llm-mux
@@ -115,12 +131,14 @@ brew services start llm-mux
 ```
 
 ### Docker
+
 ```bash
 docker pull nghyane/llm-mux
 docker run -p 8318:8318 -v ~/.config/llm-mux:/root/.config/llm-mux nghyane/llm-mux
 ```
 
 ### From Source
+
 ```bash
 go build -o llm-mux ./cmd/server/
 ./llm-mux -config config.yaml
