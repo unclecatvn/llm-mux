@@ -87,11 +87,6 @@ use-canonical-translator: false
 #   - api-key: "AIzaSy...02"
 
 
-# API keys for official Generative Language API (legacy compatibility)
-# generative-language-api-key:
-#   - "AIzaSy...01"
-#   - "AIzaSy...02"
-
 # Codex API keys
 # codex-api-key:
 #   - api-key: "sk-atSM..."

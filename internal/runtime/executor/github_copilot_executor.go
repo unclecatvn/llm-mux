@@ -94,7 +94,7 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 	if !isHTTPSuccessCode(httpResp.StatusCode) {
 		data, _ := io.ReadAll(httpResp.Body)
 		log.Debugf("github-copilot executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		err = newCategorizedError(httpResp.StatusCode, string(data), nil)
 		return resp, err
 	}
 
@@ -157,7 +157,7 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		data, _ := io.ReadAll(httpResp.Body)
 		_ = httpResp.Body.Close()
 		log.Debugf("github-copilot executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		err = newCategorizedError(httpResp.StatusCode, string(data), nil)
 		return nil, err
 	}
 

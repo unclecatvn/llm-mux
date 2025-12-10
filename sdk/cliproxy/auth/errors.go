@@ -10,6 +10,8 @@ type Error struct {
 	Retryable bool `json:"retryable"`
 	// HTTPStatus optionally records an HTTP-like status code for the error.
 	HTTPStatus int `json:"http_status,omitempty"`
+	// Category classifies the error for retry/fallback decisions.
+	Category ErrorCategory `json:"category,omitempty"`
 }
 
 // Error implements the error interface.

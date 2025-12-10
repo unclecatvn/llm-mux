@@ -150,7 +150,6 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 
 	s.cursors[key] = index + 1
 	s.mu.Unlock()
-	// log.Debugf("available: %d, index: %d, key: %d", len(available), index, index%len(available))
 	return available[index%len(available)], nil
 }
 

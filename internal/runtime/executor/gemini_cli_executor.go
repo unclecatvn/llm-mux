@@ -106,10 +106,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 
 		tok, errTok := tokenSource.Token()
 		if errTok != nil {
-			if isOAuthRevokedError(errTok) {
-				return resp, newOAuthRevokedError(errTok)
-			}
-			return resp, errTok
+			return resp, wrapTokenError(errTok)
 		}
 		updateGeminiCLITokenMetadata(auth, baseTokenData, tok)
 
@@ -227,10 +224,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 
 		tok, errTok := tokenSource.Token()
 		if errTok != nil {
-			if isOAuthRevokedError(errTok) {
-				return nil, newOAuthRevokedError(errTok)
-			}
-			return nil, errTok
+			return nil, wrapTokenError(errTok)
 		}
 		updateGeminiCLITokenMetadata(auth, baseTokenData, tok)
 
@@ -396,10 +390,7 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 
 		tok, errTok := tokenSource.Token()
 		if errTok != nil {
-			if isOAuthRevokedError(errTok) {
-				return cliproxyexecutor.Response{}, newOAuthRevokedError(errTok)
-			}
-			return cliproxyexecutor.Response{}, errTok
+			return cliproxyexecutor.Response{}, wrapTokenError(errTok)
 		}
 		updateGeminiCLITokenMetadata(auth, baseTokenData, tok)
 
@@ -519,11 +510,7 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 	src := conf.TokenSource(ctxToken, &token)
 	currentToken, err := src.Token()
 	if err != nil {
-		// Wrap OAuth errors with proper status code for auth state handling
-		if isOAuthRevokedError(err) {
-			return nil, nil, newOAuthRevokedError(err)
-		}
-		return nil, nil, err
+		return nil, nil, wrapTokenError(err)
 	}
 	updateGeminiCLITokenMetadata(auth, base, currentToken)
 	return oauth2.ReuseTokenSource(currentToken, src), base, nil
@@ -757,24 +744,13 @@ func newGeminiStatusErr(statusCode int, body []byte) statusErr {
 	return err
 }
 
-// isOAuthRevokedError checks if the error is an OAuth token revoked/expired error.
-func isOAuthRevokedError(err error) bool {
+// wrapTokenError wraps token retrieval errors with proper categorization
+func wrapTokenError(err error) error {
 	if err == nil {
-		return false
+		return nil
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "invalid_grant") ||
-		strings.Contains(msg, "Token has been expired or revoked") ||
-		strings.Contains(msg, "token expired") ||
-		strings.Contains(msg, "token revoked")
-}
-
-// newOAuthRevokedError creates a statusErr for OAuth revoked tokens.
-func newOAuthRevokedError(err error) statusErr {
-	return statusErr{
-		code: http.StatusUnauthorized,
-		msg:  fmt.Sprintf(`{"error":{"code":401,"message":"OAuth token expired or revoked: %s","status":"UNAUTHENTICATED"}}`, err.Error()),
-	}
+	return newCategorizedError(http.StatusUnauthorized, msg, nil)
 }
 
 // rateLimitRetrier handles rate limit (429) errors with exponential backoff retry logic.

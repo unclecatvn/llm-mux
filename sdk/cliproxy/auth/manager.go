@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nghyane/llm-mux/internal/registry"
-	"github.com/nghyane/llm-mux/internal/util"
 	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
@@ -410,11 +409,7 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 	}
 
 	// Translate canonical model ID to provider-specific ID using registry
-	originalModel := req.Model
 	req.Model = registry.GetGlobalRegistry().GetModelIDForProvider(req.Model, provider)
-	if req.Model != originalModel {
-		log.Debugf("Translated model %s -> %s for provider %s", originalModel, req.Model, provider)
-	}
 
 	tried := make(map[string]struct{})
 	var lastErr error
@@ -425,13 +420,6 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 				return cliproxyexecutor.Response{}, lastErr
 			}
 			return cliproxyexecutor.Response{}, errPick
-		}
-
-		accountType, accountInfo := auth.AccountInfo()
-		if accountType == "api_key" {
-			log.Debugf("Use API key %s for model %s", util.HideAPIKey(accountInfo), req.Model)
-		} else if accountType == "oauth" {
-			log.Debugf("Use OAuth %s for model %s", accountInfo, req.Model)
 		}
 
 		tried[auth.ID] = struct{}{}
@@ -479,13 +467,6 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 			return cliproxyexecutor.Response{}, errPick
 		}
 
-		accountType, accountInfo := auth.AccountInfo()
-		if accountType == "api_key" {
-			log.Debugf("Use API key %s for model %s", util.HideAPIKey(accountInfo), req.Model)
-		} else if accountType == "oauth" {
-			log.Debugf("Use OAuth %s for model %s", accountInfo, req.Model)
-		}
-
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
@@ -529,13 +510,6 @@ func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string
 				return nil, lastErr
 			}
 			return nil, errPick
-		}
-
-		accountType, accountInfo := auth.AccountInfo()
-		if accountType == "api_key" {
-			log.Debugf("Use API key %s for model %s", util.HideAPIKey(accountInfo), req.Model)
-		} else if accountType == "oauth" {
-			log.Debugf("Use OAuth %s for model %s", accountInfo, req.Model)
 		}
 
 		tried[auth.ID] = struct{}{}
@@ -588,7 +562,7 @@ func (m *Manager) normalizeProviders(providers []string) []string {
 	result := make([]string, 0, len(providers))
 	seen := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		p := strings.TrimSpace(strings.ToLower(provider))
+		p := strings.ToLower(strings.TrimSpace(provider))
 		if p == "" {
 			continue
 		}
@@ -669,7 +643,7 @@ func (m *Manager) closestCooldownWait(providers []string, model string) (time.Du
 	now := time.Now()
 	providerSet := make(map[string]struct{}, len(providers))
 	for i := range providers {
-		key := strings.TrimSpace(strings.ToLower(providers[i]))
+		key := strings.ToLower(strings.TrimSpace(providers[i]))
 		if key == "" {
 			continue
 		}
@@ -685,7 +659,7 @@ func (m *Manager) closestCooldownWait(providers []string, model string) (time.Du
 		if auth == nil {
 			continue
 		}
-		providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+		providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
@@ -712,6 +686,13 @@ func (m *Manager) shouldRetryAfterError(err error, attempt, maxAttempts int, pro
 	if maxWait <= 0 {
 		return 0, false
 	}
+
+	// Get error category - don't retry user errors or permanent auth failures
+	category := categoryFromError(err)
+	if !category.ShouldFallback() {
+		return 0, false
+	}
+
 	if status := statusCodeFromError(err); status == http.StatusOK {
 		return 0, false
 	}
@@ -720,6 +701,24 @@ func (m *Manager) shouldRetryAfterError(err error, attempt, maxAttempts int, pro
 		return 0, false
 	}
 	return wait, true
+}
+
+// categoryFromError extracts ErrorCategory from error
+func categoryFromError(err error) ErrorCategory {
+	if err == nil {
+		return CategoryUnknown
+	}
+	// Check if error has Category() method
+	type categorizer interface {
+		Category() ErrorCategory
+	}
+	if c, ok := err.(categorizer); ok {
+		return c.Category()
+	}
+	// Fallback to status code classification
+	status := statusCodeFromError(err)
+	msg := err.Error()
+	return CategorizeError(status, msg)
 }
 
 func waitForCooldown(ctx context.Context, wait time.Duration) error {
@@ -807,17 +806,28 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		} else {
 			if result.Model != "" {
 				state := ensureModelState(auth, result.Model)
-				state.Unavailable = true
-				state.Status = StatusError
-				state.UpdatedAt = now
+				statusCode := statusCodeFromResult(result.Error)
+
+				// Determine error category to decide if auth should be marked unavailable
+				var errMsg string
 				if result.Error != nil {
+					errMsg = result.Error.Message
+				}
+				category := CategorizeError(statusCode, errMsg)
+
+				// User errors (400) should NOT mark auth as unavailable
+				if category != CategoryUserError {
+					state.Unavailable = true
+					state.Status = StatusError
+				}
+				state.UpdatedAt = now
+				// Only record error details for non-user errors
+				if result.Error != nil && category != CategoryUserError {
 					state.LastError = cloneError(result.Error)
 					state.StatusMessage = result.Error.Message
 					auth.LastError = cloneError(result.Error)
 					auth.StatusMessage = result.Error.Message
 				}
-
-				statusCode := statusCodeFromResult(result.Error)
 				switch statusCode {
 				case 401:
 					next := now.Add(30 * time.Minute)
@@ -863,7 +873,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					state.NextRetryAfter = time.Time{}
 				}
 
-				auth.Status = StatusError
+				// Only update auth-level status for non-user errors
+				if category != CategoryUserError {
+					auth.Status = StatusError
+				}
 				auth.UpdatedAt = now
 				updateAggregatedAvailability(auth, now)
 			} else {
@@ -1067,14 +1080,6 @@ func statusCodeFromResult(err *Error) int {
 	return err.StatusCode()
 }
 
-// isOAuthRevokedMessage checks if the error message indicates a permanently revoked OAuth token.
-func isOAuthRevokedMessage(msg string) bool {
-	return strings.Contains(msg, "invalid_grant") ||
-		strings.Contains(msg, "token expired or revoked") ||
-		strings.Contains(msg, "oauth_token_revoked") ||
-		strings.Contains(msg, "UNAUTHENTICATED")
-}
-
 func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time) {
 	if auth == nil {
 		return
@@ -1088,25 +1093,32 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.StatusMessage = resultErr.Message
 		}
 	}
-	statusCode := statusCodeFromResult(resultErr)
-	switch statusCode {
-	case 401:
-		// Check if this is an OAuth revoked/expired error (permanent failure)
-		if resultErr != nil && isOAuthRevokedMessage(resultErr.Message) {
-			auth.StatusMessage = "oauth_token_revoked"
-			auth.Disabled = true
-			auth.Status = StatusDisabled
-		} else {
-			auth.StatusMessage = "unauthorized"
-			auth.NextRetryAfter = now.Add(30 * time.Minute)
+
+	// Use category-based decision making
+	category := CategoryUnknown
+	if resultErr != nil && resultErr.Category != CategoryUnknown {
+		category = resultErr.Category
+	} else {
+		// Fallback to status code + message classification
+		statusCode := statusCodeFromResult(resultErr)
+		msg := ""
+		if resultErr != nil {
+			msg = resultErr.Message
 		}
-	case 402, 403:
-		auth.StatusMessage = "payment_required"
+		category = CategorizeError(statusCode, msg)
+	}
+
+	switch category {
+	case CategoryAuthRevoked:
+		// Permanent OAuth failure - disable auth
+		auth.StatusMessage = "oauth_token_revoked"
+		auth.Disabled = true
+		auth.Status = StatusDisabled
+	case CategoryAuthError:
+		// Temporary auth error - retry later
+		auth.StatusMessage = "unauthorized"
 		auth.NextRetryAfter = now.Add(30 * time.Minute)
-	case 404:
-		auth.StatusMessage = "not_found"
-		auth.NextRetryAfter = now.Add(12 * time.Hour)
-	case 429:
+	case CategoryQuotaError:
 		auth.StatusMessage = "quota exhausted"
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
@@ -1122,9 +1134,17 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
-	case 408, 500, 502, 503, 504:
+	case CategoryNotFound:
+		auth.StatusMessage = "not_found"
+		auth.NextRetryAfter = now.Add(12 * time.Hour)
+	case CategoryTransient:
 		auth.StatusMessage = "transient upstream error"
 		auth.NextRetryAfter = now.Add(1 * time.Minute)
+	case CategoryUserError:
+		// User errors should not affect auth state significantly
+		auth.StatusMessage = "user_request_error"
+		auth.Unavailable = false // Don't mark auth unavailable for user errors
+		auth.Status = StatusActive
 	default:
 		if auth.StatusMessage == "" {
 			auth.StatusMessage = "request failed"
@@ -1259,6 +1279,11 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+
+		// Cleanup provider stats every hour to prevent memory leak
+		cleanupTicker := time.NewTicker(1 * time.Hour)
+		defer cleanupTicker.Stop()
+
 		m.checkRefreshes(ctx)
 		for {
 			select {
@@ -1266,6 +1291,12 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 				return
 			case <-ticker.C:
 				m.checkRefreshes(ctx)
+			case <-cleanupTicker.C:
+				// Remove provider stats older than 24 hours
+				removed := m.CleanupProviderStats(24 * time.Hour)
+				if removed > 0 {
+					log.Debugf("Cleaned up %d stale provider stats entries", removed)
+				}
 			}
 		}
 	}()

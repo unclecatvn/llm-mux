@@ -504,14 +504,8 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	}
 
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		// Check for OAuth revoked/expired token errors
-		if strings.Contains(string(bodyBytes), "invalid_grant") {
-			return auth, statusErr{
-				code: http.StatusUnauthorized,
-				msg:  fmt.Sprintf(`{"error":{"code":401,"message":"OAuth token expired or revoked","status":"UNAUTHENTICATED","details":"%s"}}`, string(bodyBytes)),
-			}
-		}
-		return auth, statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+		// Use centralized error categorization
+		return auth, newCategorizedError(httpResp.StatusCode, string(bodyBytes), nil)
 	}
 
 	var tokenResp struct {

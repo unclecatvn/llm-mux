@@ -55,8 +55,33 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 		return
 	}
 	if *errPtr != nil {
-		r.publishFailure(ctx)
+		// Don't count user errors (400 Bad Request) as failures
+		if !isUserError(*errPtr) {
+			r.publishFailure(ctx)
+		}
 	}
+}
+
+// isUserError checks if the error is a user error (400 Bad Request) that should not be counted as failure.
+func isUserError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check if error implements StatusCode() method
+	type statusCoder interface {
+		StatusCode() int
+	}
+	if sc, ok := err.(statusCoder); ok {
+		return sc.StatusCode() == 400
+	}
+	// Check if error implements Category() method
+	type categorizer interface {
+		Category() cliproxyauth.ErrorCategory
+	}
+	if cat, ok := err.(categorizer); ok {
+		return cat.Category() == cliproxyauth.CategoryUserError
+	}
+	return false
 }
 
 func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool) {

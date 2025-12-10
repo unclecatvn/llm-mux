@@ -323,6 +323,7 @@ type statusErr struct {
 	code       int
 	msg        string
 	retryAfter *time.Duration
+	category   cliproxyauth.ErrorCategory
 }
 
 func (e statusErr) Error() string {
@@ -331,5 +332,16 @@ func (e statusErr) Error() string {
 	}
 	return fmt.Sprintf("status %d", e.code)
 }
-func (e statusErr) StatusCode() int            { return e.code }
-func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+func (e statusErr) StatusCode() int               { return e.code }
+func (e statusErr) RetryAfter() *time.Duration    { return e.retryAfter }
+func (e statusErr) Category() cliproxyauth.ErrorCategory { return e.category }
+
+// newCategorizedError creates a statusErr with automatic category classification
+func newCategorizedError(code int, msg string, retryAfter *time.Duration) statusErr {
+	return statusErr{
+		code:       code,
+		msg:        msg,
+		retryAfter: retryAfter,
+		category:   cliproxyauth.CategorizeError(code, msg),
+	}
+}

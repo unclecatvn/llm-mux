@@ -306,6 +306,8 @@ func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
 	return "unknown"
 }
 
+const httpStatusBadRequest = 400
+
 func resolveSuccess(ctx context.Context) bool {
 	if ctx == nil {
 		return true
@@ -318,10 +320,13 @@ func resolveSuccess(ctx context.Context) bool {
 	if status == 0 {
 		return true
 	}
-	return status < httpStatusBadRequest
+	// 400 Bad Request is a user error, not a provider failure
+	// Only count 401, 429, 5xx etc. as failures
+	if status == httpStatusBadRequest {
+		return true
+	}
+	return status < httpStatusBadRequest || status >= 500
 }
-
-const httpStatusBadRequest = 400
 
 func normaliseDetail(detail coreusage.Detail) TokenStats {
 	tokens := TokenStats{
