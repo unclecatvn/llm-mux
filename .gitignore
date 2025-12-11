@@ -1,7 +1,7 @@
 # Binaries
 cli-proxy-api
 cli-proxy-server
-cliproxy
+/cliproxy
 llm-mux
 *.exe
 
