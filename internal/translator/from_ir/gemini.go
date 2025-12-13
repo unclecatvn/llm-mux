@@ -104,9 +104,9 @@ func (p *GeminiProvider) applyGenerationConfig(root map[string]any, req *ir.Unif
 					"includeThoughts": true,
 				}
 				switch req.Thinking.Effort {
-				case "low":
+				case ir.ReasoningEffortLow:
 					tc["thinking_level"] = "LOW"
-				case "high":
+				case ir.ReasoningEffortHigh:
 					tc["thinking_level"] = "HIGH"
 				}
 				// If budget is set but not effort, ignore budget for Gemini 3 as per docs
