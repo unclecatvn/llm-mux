@@ -145,7 +145,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 				}
 				// rateLimitActionMaxExceeded - fall through to error
 			}
-			err = statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+			err = newCategorizedError(httpResp.StatusCode, string(bodyBytes), nil)
 			return resp, err
 		}
 
@@ -178,11 +178,11 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 	switch {
 	case lastStatus != 0:
-		err = statusErr{code: lastStatus, msg: string(lastBody)}
+		err = newCategorizedError(lastStatus, string(lastBody), nil)
 	case lastErr != nil:
 		err = lastErr
 	default:
-		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
+		err = newCategorizedError(http.StatusServiceUnavailable, "antigravity executor: no base url available", nil)
 	}
 	return resp, err
 }
@@ -284,7 +284,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				log.Debugf("antigravity executor: error %d on base url %s, retrying with fallback base url: %s", httpResp.StatusCode, baseURL, baseURLs[idx+1])
 				continue
 			}
-			err = statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
+			err = newCategorizedError(httpResp.StatusCode, string(bodyBytes), nil)
 			return nil, err
 		}
 
@@ -379,11 +379,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 
 	switch {
 	case lastStatus != 0:
-		err = statusErr{code: lastStatus, msg: string(lastBody)}
+		err = newCategorizedError(lastStatus, string(lastBody), nil)
 	case lastErr != nil:
 		err = lastErr
 	default:
-		err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
+		err = newCategorizedError(http.StatusServiceUnavailable, "antigravity executor: no base url available", nil)
 	}
 	return nil, err
 }
@@ -402,7 +402,7 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 
 // CountTokens is not supported for the antigravity provider.
 func (e *AntigravityExecutor) CountTokens(context.Context, *cliproxyauth.Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, statusErr{code: http.StatusNotImplemented, msg: "count tokens not supported"}
+	return cliproxyexecutor.Response{}, newCategorizedError(http.StatusNotImplemented, "count tokens not supported", nil)
 }
 
 // FetchAntigravityModels retrieves available models using the supplied auth.
@@ -530,7 +530,7 @@ type tokenRefreshResult struct {
 
 func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *cliproxyauth.Auth) (string, *cliproxyauth.Auth, error) {
 	if auth == nil {
-		return "", nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
+		return "", nil, newCategorizedError(http.StatusUnauthorized, "missing auth", nil)
 	}
 
 	// Fast path: token still valid
@@ -569,11 +569,11 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 
 func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil {
-		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing auth"}
+		return nil, newCategorizedError(http.StatusUnauthorized, "missing auth", nil)
 	}
 	refreshToken := metaStringValue(auth.Metadata, "refresh_token")
 	if refreshToken == "" {
-		return auth, statusErr{code: http.StatusUnauthorized, msg: "missing refresh token"}
+		return auth, newCategorizedError(http.StatusUnauthorized, "missing refresh token", nil)
 	}
 
 	form := url.Values{}
@@ -652,7 +652,7 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 
 func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string) (*http.Request, error) {
 	if token == "" {
-		return nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
+		return nil, newCategorizedError(http.StatusUnauthorized, "missing access token", nil)
 	}
 
 	base := strings.TrimSuffix(baseURL, "/")
