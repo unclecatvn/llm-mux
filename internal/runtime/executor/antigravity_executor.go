@@ -826,7 +826,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, met
 	}
 
 	// Optimize: Set correct model name (alias) directly to avoid external re-parsing
-	root["model"] = alias2ModelName(modelName)
+	// root["model"] = alias2ModelName(modelName)
 	root["userAgent"] = "antigravity"
 	// Use real project ID from auth if available, otherwise generate random (legacy fallback)
 	if projectID != "" {
@@ -1008,11 +1008,11 @@ func alias2ModelName(modelName string) string {
 	// Claude models: accept both prefixed and canonical names
 	// Maps to upstream model name for API call
 	case "gemini-claude-sonnet-4-5", "claude-sonnet-4-5":
-		return "gemini-claude-sonnet-4-5"
+		return "claude-sonnet-4-5"
 	case "gemini-claude-sonnet-4-5-thinking", "claude-sonnet-4-5-thinking":
-		return "gemini-claude-sonnet-4-5-thinking"
+		return "claude-sonnet-4-5-thinking"
 	case "gemini-claude-opus-4-5-thinking", "claude-opus-4-5-thinking":
-		return "gemini-claude-opus-4-5-thinking"
+		return "claude-opus-4-5-thinking"
 	default:
 		return modelName
 	}
