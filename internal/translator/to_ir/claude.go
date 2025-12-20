@@ -119,6 +119,7 @@ func ParseClaudeRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 				b := int32(budget.Int())
 				req.Thinking.ThinkingBudget = &b
 			}
+		} else if thinking.Get("type").String() == "disabled" {
 			// Note: -1 for auto is not needed with pointer - nil means auto
 		} else if thinking.Get("type").String() == "disabled" {
 			zero := int32(0)
@@ -163,6 +164,8 @@ func parseClaudeMessage(m gjson.Result) ir.Message {
 		return msg
 	}
 
+	var firstToolID string
+
 	if content.IsArray() {
 		for _, block := range content.Array() {
 			switch block.Get("type").String() {
@@ -179,12 +182,17 @@ func parseClaudeMessage(m gjson.Result) ir.Message {
 					Reasoning:        block.Get("thinking").String(),
 					ThoughtSignature: sig,
 				})
-			case "redacted_thinking":
-				// Claude Extended Thinking: Redacted thinking blocks (content hidden, opaque data preserved)
+			case "reasoning":
+				// OpenCode SDK / Vercel AI SDK "reasoning" block
+
+				var sig []byte
+				if s := block.Get("signature").String(); s != "" {
+					sig = []byte(s)
+				}
 				msg.Content = append(msg.Content, ir.ContentPart{
 					Type:             ir.ContentTypeReasoning,
-					Reasoning:        "[Redacted]",
-					ThoughtSignature: []byte(block.Get("data").String()), // Preserve opaque blob for round-trip
+					Reasoning:        block.Get("text").String(),
+					ThoughtSignature: sig,
 				})
 			case "image":
 				if source := block.Get("source"); source.Exists() && source.Get("type").String() == "base64" {
@@ -194,12 +202,26 @@ func parseClaudeMessage(m gjson.Result) ir.Message {
 					})
 				}
 			case "tool_use":
+				toolID := block.Get("id").String()
+
+				// Decode smuggled thought signature from ID
+				// Format: realID__SIG__signature
+				var thoughtSig []byte
+				if idx := strings.Index(toolID, "__SIG__"); idx != -1 {
+					sigStr := toolID[idx+len("__SIG__"):]
+					toolID = toolID[:idx]
+					thoughtSig = []byte(sigStr)
+				}
+
+				if firstToolID == "" {
+					firstToolID = toolID
+				}
 				inputRaw := block.Get("input").Raw
 				if inputRaw == "" {
 					inputRaw = "{}"
 				}
 				msg.ToolCalls = append(msg.ToolCalls, ir.ToolCall{
-					ID: block.Get("id").String(), Name: block.Get("name").String(), Args: inputRaw,
+					ID: toolID, Name: block.Get("name").String(), Args: inputRaw, ThoughtSignature: thoughtSig,
 				})
 			case "tool_result":
 				resultContent := block.Get("content")
@@ -217,13 +239,20 @@ func parseClaudeMessage(m gjson.Result) ir.Message {
 				} else {
 					resultStr = resultContent.Raw
 				}
+				toolResultID := block.Get("tool_use_id").String()
+				// Strip signature from ID if present (Client sends back exact ID it received)
+				if idx := strings.Index(toolResultID, "__SIG__"); idx != -1 {
+					toolResultID = toolResultID[:idx]
+				}
+
 				msg.Content = append(msg.Content, ir.ContentPart{
 					Type:       ir.ContentTypeToolResult,
-					ToolResult: &ir.ToolResultPart{ToolCallID: block.Get("tool_use_id").String(), Result: resultStr},
+					ToolResult: &ir.ToolResultPart{ToolCallID: toolResultID, Result: resultStr},
 				})
 			}
 		}
 	}
+
 	return msg
 }
 
@@ -245,8 +274,12 @@ func ParseClaudeResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
 	}
 
 	msg := ir.Message{Role: ir.RoleAssistant}
+
 	for _, block := range content.Array() {
 		ir.ParseClaudeContentBlock(block, &msg)
+		if block.Get("type").String() == "thinking" {
+			// No-op: handled by UseParseClaudeContentBlock
+		}
 	}
 
 	if len(msg.Content) > 0 || len(msg.ToolCalls) > 0 {

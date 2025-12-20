@@ -48,3 +48,6 @@ _wgun/
 ._*
 gitstore/
 .env
+
+.gemini/*
+.gemini

@@ -367,11 +367,8 @@ func TranslateCodexResponseStream(cfg *config.Config, to sdktranslator.Format, c
 
 // TranslateToClaude converts request to Claude API format.
 func TranslateToClaude(cfg *config.Config, from sdktranslator.Format, model string, payload []byte, streaming bool, metadata map[string]any) ([]byte, error) {
-	// Early passthrough for claude format - preserves native Claude request structure
-	fromStr := from.String()
-	if fromStr == "claude" {
-		return payload, nil
-	}
+	// Note: We always parse to IR even for "claude" format to enable thinking block injection
+	// for history turns that may have been stripped by the client.
 
 	irReq, err := convertRequestToIR(from, model, payload, metadata)
 	if err != nil {
@@ -483,12 +480,13 @@ func TranslateGeminiCLIResponseNonStream(cfg *config.Config, to sdktranslator.Fo
 // GeminiCLIStreamState maintains state for stateful streaming conversions (e.g., Claude tool calls).
 type GeminiCLIStreamState struct {
 	ClaudeState          *from_ir.ClaudeStreamState
-	ToolCallIndex        int                   // Track tool call index across chunks for OpenAI format
-	ReasoningTokensCount int                   // Track accumulated reasoning tokens for final usage chunk
-	ReasoningCharsAccum  int                   // Track accumulated reasoning characters (for estimation if provider doesn't give count)
-	ToolSchemaCtx        *ir.ToolSchemaContext // Schema context for normalizing tool call parameters
-	FinishSent           bool                  // Track if finish event was already sent (prevent duplicates)
-	HasToolCalls         bool                  // Track if any tool calls were seen across chunks (for correct finish_reason)
+	ToolCallIndex        int // Track tool call index across chunks for OpenAI format
+	ReasoningTokensCount int // Track accumulated reasoning tokens for final usage chunk
+	ReasoningCharsAccum  int // Track accumulated reasoning characters (for estimation if provider doesn't give count)
+
+	ToolSchemaCtx *ir.ToolSchemaContext // Schema context for normalizing tool call parameters
+	FinishSent    bool                  // Track if finish event was already sent (prevent duplicates)
+	HasToolCalls  bool                  // Track if any tool calls were seen across chunks (for correct finish_reason)
 }
 
 // NewAntigravityStreamState creates a new stream state with tool schema context for Antigravity provider.
@@ -539,11 +537,6 @@ func TranslateGeminiCLIResponseStream(cfg *config.Config, to sdktranslator.Forma
 
 	if len(events) == 0 {
 		return nil, nil
-	}
-
-	// Debug trace: log parsed events for Claude thinking models
-	if debugThinking && len(events) > 0 {
-		logThinkingEvents(events, model)
 	}
 
 	// Step 2: Convert IR events to target format chunks
@@ -607,6 +600,7 @@ func TranslateGeminiCLIResponseStream(cfg *config.Config, to sdktranslator.Forma
 			state.ClaudeState = &from_ir.ClaudeStreamState{}
 		}
 		for _, event := range events {
+
 			claudeChunks, err := from_ir.ToClaudeSSE(event, model, messageID, state.ClaudeState)
 			if err != nil {
 				return nil, err
@@ -767,6 +761,7 @@ func TranslateGeminiResponseStream(cfg *config.Config, to sdktranslator.Format, 
 				state.ReasoningCharsAccum += len(event.Reasoning)
 			}
 			if event.Type == ir.EventTypeFinish {
+
 				// Override finish_reason if tool calls were seen
 				if state.HasToolCalls {
 					event.FinishReason = ir.FinishReasonToolCalls
@@ -796,6 +791,11 @@ func TranslateGeminiResponseStream(cfg *config.Config, to sdktranslator.Format, 
 			state.ClaudeState = from_ir.NewClaudeStreamState()
 		}
 		for _, event := range events {
+			// Track tool calls across chunks
+			if event.Type == ir.EventTypeToolCall {
+				state.HasToolCalls = true
+			}
+
 			claudeChunks, err := from_ir.ToClaudeSSE(event, model, messageID, state.ClaudeState)
 			if err != nil {
 				return nil, err
@@ -866,6 +866,11 @@ func TranslateClaudeResponseStream(cfg *config.Config, to sdktranslator.Format, 
 	switch toStr {
 	case "openai", "cline":
 		for _, event := range events {
+			// Track tool calls across chunks
+			if event.Type == ir.EventTypeToolCall {
+				state.HasToolCalls = true
+			}
+
 			// Use ToolCallIndex from event for proper tool call indexing
 			idx := event.ToolCallIndex
 			chunk, err := from_ir.ToOpenAIChunk(event, model, messageID, idx)

@@ -208,12 +208,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if from.String() == "claude" {
 			scanner := bufio.NewScanner(decodedBody)
 			scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
+
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				if detail, ok := parseClaudeStreamUsage(line); ok {
 					reporter.publish(ctx, detail)
 				}
+
 				// Forward the line as-is to preserve SSE format
+				// We need a copy of the bytes because scanner.Bytes() is reused
 				cloned := make([]byte, len(line)+1)
 				copy(cloned, line)
 				cloned[len(line)] = '\n'

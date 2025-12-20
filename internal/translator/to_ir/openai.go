@@ -721,10 +721,14 @@ func parseOpenAITool(t gjson.Result) *ir.ToolDefinition {
 	if paramsResult.Exists() && paramsResult.IsObject() {
 		if json.Unmarshal([]byte(paramsResult.Raw), &params) == nil {
 			params = ir.CleanJsonSchema(params)
+			// Ensure type is "object" - some SDKs send "None" or omit type
+			if typeVal, ok := params["type"].(string); !ok || typeVal == "" || typeVal == "None" {
+				params["type"] = "object"
+			}
 		}
 	}
 	if params == nil {
-		params = make(map[string]any)
+		params = map[string]any{"type": "object", "properties": map[string]any{}}
 	}
 	return &ir.ToolDefinition{Name: name, Description: description, Parameters: params}
 }

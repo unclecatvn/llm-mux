@@ -151,14 +151,6 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 
 		reporter.publish(ctx, parseAntigravityUsage(bodyBytes))
 
-		// Debug: Log raw response for Claude models (if needed for debugging)
-		// Note: Detailed tracing confirms that Antigravity backend generates thinking tokens (usage count is high)
-		// but currently does not return the thinking content in the response body for Claude models,
-		// even with includeThoughts=true. This is a server-side limitation.
-		// if strings.Contains(req.Model, "claude") {
-		// log.Infof("antigravity executor [CLAUDE]: raw response body: %s", string(bodyBytes))
-		// }
-
 		// Translate response using canonical translator
 		// Note: For Claude Thinking models on Antigravity, thinking content is ONLY returned
 		// in Streaming mode (SSE). Non-stream responses currently strip thinking content.
@@ -208,11 +200,6 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	translated, errTranslate := TranslateToGeminiCLI(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
 	if errTranslate != nil {
 		return nil, fmt.Errorf("failed to translate request: %w", errTranslate)
-	}
-
-	// Debug trace: log final request payload for Claude thinking models
-	if debugThinking {
-		logThinkingRequest(translated, req.Model)
 	}
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
@@ -314,11 +301,6 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 
 				line := scanner.Bytes()
 
-				// Debug trace: log raw SSE for Claude thinking models
-				if debugThinking {
-					logThinkingRawSSE(line, req.Model)
-				}
-
 				// Filter usage metadata for all models
 				// Only retain usage statistics in the terminal chunk
 				filteredLine := FilterSSEUsageMetadata(line)
@@ -327,11 +309,6 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				payload := jsonPayload(filteredLine)
 				if payload == nil {
 					continue // Skip non-JSON lines (empty, comments, etc.)
-				}
-
-				// Debug trace: log parsed payload for Claude thinking models
-				if debugThinking {
-					logThinkingPayload(payload, req.Model)
 				}
 
 				// Validate JSON to handle malformed SSE data gracefully
@@ -706,25 +683,8 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		strJSON = util.DeleteKey(strJSON, "$ref")
 		strJSON = util.DeleteKey(strJSON, "$defs")
 
-		paths = make([]string, 0)
-		util.Walk(gjson.Parse(strJSON), "", "anyOf", &paths)
-		for _, p := range paths {
-			anyOf := gjson.Get(strJSON, p)
-			if anyOf.IsArray() {
-				anyOfItems := anyOf.Array()
-				if len(anyOfItems) > 0 {
-					strJSON, _ = sjson.SetRaw(strJSON, p[:len(p)-len(".anyOf")], anyOfItems[0].Raw)
-				}
-			}
-		}
-
 		payload = []byte(strJSON)
 	}
-
-	// Debug: Log request payload for Claude models
-	// if strings.Contains(modelName, "claude") {
-	// 	log.Infof("antigravity executor [CLAUDE REQUEST]: payload (first 2000 chars): %s", truncateString(string(payload), 2000))
-	// }
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
 	if errReq != nil {
