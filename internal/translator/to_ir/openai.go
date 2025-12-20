@@ -445,12 +445,24 @@ func ParseOpenAIChunk(rawJSON []byte) ([]ir.UnifiedEvent, error) {
 			}
 			if v := u.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
 				usage.CachedTokens = v.Int()
+				if usage.PromptTokensDetails == nil {
+					usage.PromptTokensDetails = &ir.PromptTokensDetails{}
+				}
+				usage.PromptTokensDetails.CachedTokens = v.Int()
 			}
 			if v := u.Get("prompt_tokens_details.audio_tokens"); v.Exists() {
 				usage.AudioTokens = v.Int()
+				if usage.PromptTokensDetails == nil {
+					usage.PromptTokensDetails = &ir.PromptTokensDetails{}
+				}
+				usage.PromptTokensDetails.AudioTokens = v.Int()
 			}
 			if v := u.Get("completion_tokens_details.reasoning_tokens"); v.Exists() {
 				usage.ThoughtsTokenCount = int32(v.Int())
+				if usage.CompletionTokensDetails == nil {
+					usage.CompletionTokensDetails = &ir.CompletionTokensDetails{}
+				}
+				usage.CompletionTokensDetails.ReasoningTokens = v.Int()
 			}
 			if v := u.Get("completion_tokens_details.audio_tokens"); v.Exists() {
 				if usage.CompletionTokensDetails == nil {
@@ -460,9 +472,17 @@ func ParseOpenAIChunk(rawJSON []byte) ([]ir.UnifiedEvent, error) {
 			}
 			if v := u.Get("completion_tokens_details.accepted_prediction_tokens"); v.Exists() {
 				usage.AcceptedPredictionTokens = v.Int()
+				if usage.CompletionTokensDetails == nil {
+					usage.CompletionTokensDetails = &ir.CompletionTokensDetails{}
+				}
+				usage.CompletionTokensDetails.AcceptedPredictionTokens = v.Int()
 			}
 			if v := u.Get("completion_tokens_details.rejected_prediction_tokens"); v.Exists() {
 				usage.RejectedPredictionTokens = v.Int()
+				if usage.CompletionTokensDetails == nil {
+					usage.CompletionTokensDetails = &ir.CompletionTokensDetails{}
+				}
+				usage.CompletionTokensDetails.RejectedPredictionTokens = v.Int()
 			}
 
 			events = append(events, ir.UnifiedEvent{
@@ -561,9 +581,23 @@ func parseResponsesStreamEvent(eventType string, root gjson.Result) ([]ir.Unifie
 			}
 			if v := u.Get("input_tokens_details.cached_tokens"); v.Exists() {
 				event.Usage.CachedTokens = v.Int()
+				if event.Usage.PromptTokensDetails == nil {
+					event.Usage.PromptTokensDetails = &ir.PromptTokensDetails{}
+				}
+				event.Usage.PromptTokensDetails.CachedTokens = v.Int()
 			}
 			if v := u.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
 				event.Usage.ThoughtsTokenCount = int32(v.Int())
+				if event.Usage.CompletionTokensDetails == nil {
+					event.Usage.CompletionTokensDetails = &ir.CompletionTokensDetails{}
+				}
+				event.Usage.CompletionTokensDetails.ReasoningTokens = v.Int()
+			}
+			if v := u.Get("output_tokens_details.audio_tokens"); v.Exists() {
+				if event.Usage.CompletionTokensDetails == nil {
+					event.Usage.CompletionTokensDetails = &ir.CompletionTokensDetails{}
+				}
+				event.Usage.CompletionTokensDetails.AudioTokens = v.Int()
 			}
 		}
 		events = append(events, event)

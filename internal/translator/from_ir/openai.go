@@ -863,14 +863,26 @@ func ToResponsesAPIResponse(messages []ir.Message, usage *ir.Usage, model string
 		if cachedTokens > 0 {
 			responsesUsage["input_tokens_details"] = map[string]any{"cached_tokens": cachedTokens}
 		}
-		var thoughtsTokens int32
-		if meta != nil && meta.ThoughtsTokenCount > 0 {
-			thoughtsTokens = meta.ThoughtsTokenCount
+		// Build output_tokens_details with all available fields
+		outputDetails := map[string]any{}
+		var thoughtsTokens int64
+		if usage != nil && usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			thoughtsTokens = usage.CompletionTokensDetails.ReasoningTokens
+		} else if meta != nil && meta.ThoughtsTokenCount > 0 {
+			thoughtsTokens = int64(meta.ThoughtsTokenCount)
 		} else if usage != nil && usage.ThoughtsTokenCount > 0 {
-			thoughtsTokens = usage.ThoughtsTokenCount
+			thoughtsTokens = int64(usage.ThoughtsTokenCount)
 		}
 		if thoughtsTokens > 0 {
-			responsesUsage["output_tokens_details"] = map[string]any{"reasoning_tokens": thoughtsTokens}
+			outputDetails["reasoning_tokens"] = thoughtsTokens
+		}
+		if usage != nil && usage.CompletionTokensDetails != nil {
+			if usage.CompletionTokensDetails.AudioTokens > 0 {
+				outputDetails["audio_tokens"] = usage.CompletionTokensDetails.AudioTokens
+			}
+		}
+		if len(outputDetails) > 0 {
+			responsesUsage["output_tokens_details"] = outputDetails
 		}
 		response["usage"] = responsesUsage
 	}
@@ -1080,11 +1092,25 @@ func ToResponsesAPIChunk(event ir.UnifiedEvent, model string, state *ResponsesSt
 			usageMap = map[string]any{
 				"input_tokens": event.Usage.PromptTokens, "output_tokens": event.Usage.CompletionTokens, "total_tokens": event.Usage.TotalTokens,
 			}
-			if event.Usage.CachedTokens > 0 {
-				usageMap["input_tokens_details"] = map[string]any{"cached_tokens": event.Usage.CachedTokens}
+			// Check PromptTokensDetails first, then fall back to flat CachedTokens
+			var cachedTokens int64
+			if event.Usage.PromptTokensDetails != nil && event.Usage.PromptTokensDetails.CachedTokens > 0 {
+				cachedTokens = event.Usage.PromptTokensDetails.CachedTokens
+			} else if event.Usage.CachedTokens > 0 {
+				cachedTokens = event.Usage.CachedTokens
 			}
-			if event.Usage.ThoughtsTokenCount > 0 {
-				usageMap["output_tokens_details"] = map[string]any{"reasoning_tokens": event.Usage.ThoughtsTokenCount}
+			if cachedTokens > 0 {
+				usageMap["input_tokens_details"] = map[string]any{"cached_tokens": cachedTokens}
+			}
+			// Check CompletionTokensDetails first, then fall back to ThoughtsTokenCount
+			var reasoningTokens int64
+			if event.Usage.CompletionTokensDetails != nil && event.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+				reasoningTokens = event.Usage.CompletionTokensDetails.ReasoningTokens
+			} else if event.Usage.ThoughtsTokenCount > 0 {
+				reasoningTokens = int64(event.Usage.ThoughtsTokenCount)
+			}
+			if reasoningTokens > 0 {
+				usageMap["output_tokens_details"] = map[string]any{"reasoning_tokens": reasoningTokens}
 			}
 		}
 
