@@ -127,8 +127,8 @@ curl http://localhost:8318/v1/chat/completions \
 | `gemini-2.5-pro` | 1M tokens | `--login` or `--antigravity-login` |
 | `gemini-2.5-flash` | 1M tokens | `--login` or `--antigravity-login` |
 | `gemini-2.5-flash-lite` | 1M tokens | `--login` or `--antigravity-login` |
-| `gemini-3-flash-preview` | 1M tokens | `--antigravity-login` |
-| `gemini-3-pro-preview` | 1M tokens | `--antigravity-login` |
+| `gemini-3-flash-preview` | 1M tokens | `--login` or `--antigravity-login` |
+| `gemini-3-pro-preview` | 1M tokens | `--login` or `--antigravity-login` |
 
 ### Claude (via Claude Pro/Max Subscription)
 
