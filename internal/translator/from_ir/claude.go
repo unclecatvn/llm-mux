@@ -150,11 +150,65 @@ func (p *ClaudeProvider) ConvertRequest(req *ir.UnifiedChatRequest) ([]byte, err
 		case ir.RoleTool:
 			for _, part := range msg.Content {
 				if part.Type == ir.ContentTypeToolResult && part.ToolResult != nil {
+					toolResultBlock := map[string]any{
+						"type":        ir.ClaudeBlockToolResult,
+						"tool_use_id": part.ToolResult.ToolCallID,
+					}
+					// Check if we have images or files (need array content)
+					hasMedia := len(part.ToolResult.Images) > 0 || len(part.ToolResult.Files) > 0
+					if hasMedia {
+						var content []any
+						if part.ToolResult.Result != "" {
+							content = append(content, map[string]any{"type": "text", "text": part.ToolResult.Result})
+						}
+						for _, img := range part.ToolResult.Images {
+							if img.Data != "" {
+								content = append(content, map[string]any{
+									"type": ir.ClaudeBlockImage,
+									"source": map[string]any{
+										"type": "base64", "media_type": img.MimeType, "data": img.Data,
+									},
+								})
+							} else if img.URL != "" {
+								content = append(content, map[string]any{
+									"type":   ir.ClaudeBlockImage,
+									"source": map[string]any{"type": "url", "url": img.URL},
+								})
+							} else if img.FileID != "" {
+								content = append(content, map[string]any{
+									"type":   ir.ClaudeBlockImage,
+									"source": map[string]any{"type": "file", "file_id": img.FileID},
+								})
+							}
+						}
+						for _, file := range part.ToolResult.Files {
+							docBlock := map[string]any{"type": ir.ClaudeBlockDocument}
+							if file.Filename != "" {
+								docBlock["title"] = file.Filename
+							}
+							source := map[string]any{}
+							if file.FileData != "" {
+								source["type"], source["data"] = "base64", file.FileData
+								if file.MimeType != "" {
+									source["media_type"] = file.MimeType
+								}
+							} else if file.FileURL != "" {
+								source["type"], source["url"] = "url", file.FileURL
+							} else if file.FileID != "" {
+								source["type"], source["file_id"] = "file", file.FileID
+							}
+							if len(source) > 0 {
+								docBlock["source"] = source
+								content = append(content, docBlock)
+							}
+						}
+						toolResultBlock["content"] = content
+					} else {
+						toolResultBlock["content"] = part.ToolResult.Result
+					}
 					messages = append(messages, map[string]any{
-						"role": ir.ClaudeRoleUser,
-						"content": []any{map[string]any{
-							"type": ir.ClaudeBlockToolResult, "tool_use_id": part.ToolResult.ToolCallID, "content": part.ToolResult.Result,
-						}},
+						"role":    ir.ClaudeRoleUser,
+						"content": []any{toolResultBlock},
 					})
 				}
 			}
