@@ -2,7 +2,6 @@ package util
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"sync"
 
@@ -10,18 +9,32 @@ import (
 	"github.com/tiktoken-go/tokenizer"
 )
 
-// tiktokenCache caches tokenizer instances to avoid re-initialization overhead.
 var (
 	tiktokenCache   = make(map[tokenizer.Encoding]tokenizer.Codec)
 	tiktokenCacheMu sync.RWMutex
 )
 
-// ImageTokenCostOpenAI is the fixed token cost (approximate) for images in OpenAI/Claude models.
-// High-res mode is usually 85 + 170*tiles. We average to a safe estimate.
+var (
+	roleTokenCache   = make(map[string]int64)
+	roleTokenCacheMu sync.RWMutex
+)
+
 const ImageTokenCostOpenAI = 255
 
-// CountTiktokenTokens counts tokens for OpenAI, Claude, Qwen, and other models using tiktoken.
-// It automatically selects o200k_base or cl100k_base based on the model.
+const (
+	DocTokenCost   = 500
+	AudioTokenCost = 300
+	VideoTokenCost = 2000
+)
+
+var stringBuilderPool = sync.Pool{
+	New: func() any {
+		sb := &strings.Builder{}
+		sb.Grow(1024)
+		return sb
+	},
+}
+
 func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 	if req == nil {
 		return 0
@@ -30,58 +43,85 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 	encodingName := getTiktokenEncodingName(model)
 	enc, err := getTiktokenCodec(encodingName)
 	if err != nil {
-		// Fallback to simpler counting or return 0 if critical
 		return 0
 	}
 
-	var totalTokens int64 = 0
+	var totalTokens int64
 
-	// Overhead per message (improvising OpenAI's format: <|start|>{role/name}\n{content}<|end|>\n)
-	// Usually 3 or 4 tokens per message depending on the model.
-	tokensPerMessage := int64(3)
-	if encodingName == tokenizer.O200kBase {
-		tokensPerMessage = 3 // GPT-4o style
-	}
+	const tokensPerMessage int64 = 3
 
-	// 1. Instructions (Responses API system instructions)
 	if req.Instructions != "" {
-		ids, _, _ := enc.Encode(req.Instructions)
-		totalTokens += int64(len(ids)) + tokensPerMessage
+		totalTokens += countTokens(enc, req.Instructions) + tokensPerMessage
 	}
 
-	// 2. Messages
-	for _, msg := range req.Messages {
+	for i := range req.Messages {
 		totalTokens += tokensPerMessage
 
-		// Role tokens
-		// Check cache for role token count to optimize? Role is short, just encode.
-		roleIds, _, _ := enc.Encode(string(msg.Role))
-		totalTokens += int64(len(roleIds))
+		totalTokens += countRoleTokens(enc, string(req.Messages[i].Role))
 
-		// Content tokens
-		contentStr, imageCount := irMessageToString(&msg)
+		contentStr, imageCount, docCount, audioCount, videoCount := irMessageToStringPooled(&req.Messages[i])
 		if contentStr != "" {
-			ids, _, _ := enc.Encode(contentStr)
-			totalTokens += int64(len(ids))
+			totalTokens += countTokens(enc, contentStr)
 		}
-		totalTokens += int64(imageCount * ImageTokenCostOpenAI)
+		totalTokens += int64(imageCount*ImageTokenCostOpenAI +
+			docCount*DocTokenCost +
+			audioCount*AudioTokenCost +
+			videoCount*VideoTokenCost)
 	}
 
-	// 3. Tools
 	if len(req.Tools) > 0 {
-		toolsJSON, _ := json.Marshal(req.Tools)
-		ids, _, _ := enc.Encode(string(toolsJSON))
-		// Tools overhead
-		totalTokens += int64(len(ids)) + 10 // +10 for structure overhead
+		totalTokens += countJSONTokens(enc, req.Tools) + 10
 	}
 
-	// 4. Reply priming (every reply is primed with <|start|>assistant<|message|>)
+	if len(req.MCPServers) > 0 {
+		totalTokens += countJSONTokens(enc, req.MCPServers) + 20
+	}
+
+	if req.Metadata != nil {
+		for _, key := range []string{ir.MetaGoogleSearch, ir.MetaClaudeComputer, ir.MetaClaudeBash, ir.MetaClaudeTextEditor} {
+			if val, ok := req.Metadata[key]; ok {
+				totalTokens += countJSONTokens(enc, val) + 15
+			}
+		}
+	}
+
 	totalTokens += 3
 
 	return totalTokens
 }
 
-// getTiktokenCodec returns a cached codec.
+func countTokens(enc tokenizer.Codec, s string) int64 {
+	ids, _, _ := enc.Encode(s)
+	return int64(len(ids))
+}
+
+func countJSONTokens(enc tokenizer.Codec, v any) int64 {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	ids, _, _ := enc.Encode(string(data))
+	return int64(len(ids))
+}
+
+func countRoleTokens(enc tokenizer.Codec, role string) int64 {
+	roleTokenCacheMu.RLock()
+	count, ok := roleTokenCache[role]
+	roleTokenCacheMu.RUnlock()
+	if ok {
+		return count
+	}
+
+	ids, _, _ := enc.Encode(role)
+	count = int64(len(ids))
+
+	roleTokenCacheMu.Lock()
+	roleTokenCache[role] = count
+	roleTokenCacheMu.Unlock()
+
+	return count
+}
+
 func getTiktokenCodec(encoding tokenizer.Encoding) (tokenizer.Codec, error) {
 	tiktokenCacheMu.RLock()
 	codec, ok := tiktokenCache[encoding]
@@ -93,7 +133,6 @@ func getTiktokenCodec(encoding tokenizer.Encoding) (tokenizer.Codec, error) {
 	tiktokenCacheMu.Lock()
 	defer tiktokenCacheMu.Unlock()
 
-	// Double check
 	if codec, ok := tiktokenCache[encoding]; ok {
 		return codec, nil
 	}
@@ -107,38 +146,39 @@ func getTiktokenCodec(encoding tokenizer.Encoding) (tokenizer.Codec, error) {
 	return codec, nil
 }
 
-// getTiktokenEncodingName maps model names to the best available tiktoken encoding.
 func getTiktokenEncodingName(model string) tokenizer.Encoding {
 	lower := strings.ToLower(model)
 
 	switch {
-	// GPT-5 / GPT-4o / Claude 3.x / Qwen -> o200k_base (200k context support)
 	case strings.Contains(lower, "gpt-5"),
 		strings.Contains(lower, "gpt-4o"),
 		strings.Contains(lower, "claude"),
 		strings.Contains(lower, "qwen"),
-		strings.Contains(lower, "antigravity"): // Internal name often maps to Claude/Gemini
+		strings.Contains(lower, "antigravity"):
 		return tokenizer.O200kBase
 
-	// Legacy GPT-4 / GPT-3.5 -> cl100k_base
 	case strings.Contains(lower, "gpt-4"),
 		strings.Contains(lower, "gpt-3.5"),
 		strings.Contains(lower, "turbo"):
 		return tokenizer.Cl100kBase
 
-	// Default for modern models
 	default:
 		return tokenizer.O200kBase
 	}
 }
 
-// irMessageToString converts an IR message to a text representation for token counting.
-// Returns the text content and image count. All nil checks are performed to prevent panics.
-func irMessageToString(msg *ir.Message) (string, int) {
-	var sb strings.Builder
-	imageCount := 0
+func irMessageToStringPooled(msg *ir.Message) (string, int, int, int, int) {
+	sb := stringBuilderPool.Get().(*strings.Builder)
+	sb.Reset()
+	defer stringBuilderPool.Put(sb)
 
-	for _, part := range msg.Content {
+	imageCount := 0
+	docCount := 0
+	audioCount := 0
+	videoCount := 0
+
+	for i := range msg.Content {
+		part := &msg.Content[i]
 		switch part.Type {
 		case ir.ContentTypeText:
 			if part.Text != "" {
@@ -147,6 +187,9 @@ func irMessageToString(msg *ir.Message) (string, int) {
 		case ir.ContentTypeReasoning:
 			if part.Reasoning != "" {
 				sb.WriteString(part.Reasoning)
+			}
+			if len(part.ThoughtSignature) > 0 {
+				sb.Write(part.ThoughtSignature)
 			}
 		case ir.ContentTypeCodeResult:
 			if part.CodeExecution != nil && part.CodeExecution.Output != "" {
@@ -161,21 +204,43 @@ func irMessageToString(msg *ir.Message) (string, int) {
 				imageCount++
 			}
 		case ir.ContentTypeFile:
-			if part.File != nil && part.File.FileData != "" {
-				sb.WriteString(part.File.FileData)
+			if part.File != nil {
+				if part.File.FileData != "" {
+					sb.WriteString(part.File.FileData)
+				} else if part.File.FileURL != "" || part.File.FileID != "" {
+					docCount++
+				}
+			}
+		case ir.ContentTypeAudio:
+			if part.Audio != nil {
+				if part.Audio.Transcript != "" {
+					sb.WriteString(part.Audio.Transcript)
+				}
+				audioCount++
+			}
+		case ir.ContentTypeVideo:
+			if part.Video != nil {
+				videoCount++
 			}
 		case ir.ContentTypeToolResult:
 			if part.ToolResult != nil {
-				sb.WriteString(fmt.Sprintf("\nTool %s result: %s", part.ToolResult.ToolCallID, part.ToolResult.Result))
+				sb.WriteString("\nTool ")
+				sb.WriteString(part.ToolResult.ToolCallID)
+				sb.WriteString(" result: ")
+				sb.WriteString(part.ToolResult.Result)
 				imageCount += len(part.ToolResult.Images)
 			}
 		}
 	}
 
-	// Tool calls
-	for _, tc := range msg.ToolCalls {
-		sb.WriteString(fmt.Sprintf("\nCall tool %s(%s)", tc.Name, tc.Args))
+	for i := range msg.ToolCalls {
+		tc := &msg.ToolCalls[i]
+		sb.WriteString("\nCall tool ")
+		sb.WriteString(tc.Name)
+		sb.WriteByte('(')
+		sb.WriteString(tc.Args)
+		sb.WriteByte(')')
 	}
 
-	return sb.String(), imageCount
+	return sb.String(), imageCount, docCount, audioCount, videoCount
 }
