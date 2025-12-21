@@ -86,20 +86,10 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	_, body, err := e.translateRequest(req, opts, true)
+	// Translate request and count tokens in one operation (uses shared IR)
+	body, estimatedInputTokens, err := e.translateRequestWithTokens(req, opts, true)
 	if err != nil {
 		return nil, err
-	}
-
-	// Start token counting in parallel (for Claude format)
-	// This runs concurrently with WebSocket connection, result ready when stream starts
-	tokensChan := make(chan int64, 1)
-	if opts.SourceFormat.String() == "claude" {
-		go func() {
-			tokensChan <- util.CountTokensFromGeminiRequest(req.Model, body.payload)
-		}()
-	} else {
-		tokensChan <- 0
 	}
 
 	endpoint := e.buildEndpoint(req.Model, body.action, opts.Alt)
@@ -149,10 +139,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	out := make(chan cliproxyexecutor.StreamChunk)
 	stream = out
 
-	// Get pre-calculated input tokens from parallel goroutine
-	estimatedInputTokens := <-tokensChan
-
-	go func(first wsrelay.StreamEvent) {
+	go func(first wsrelay.StreamEvent, inputTokens int64) {
 		defer close(out)
 
 		// State for new translator (tracks reasoning tokens)
@@ -160,7 +147,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			ClaudeState: from_ir.NewClaudeStreamState(),
 		}
 		// Set pre-calculated input tokens for message_start
-		streamState.ClaudeState.EstimatedInputTokens = estimatedInputTokens
+		streamState.ClaudeState.EstimatedInputTokens = inputTokens
 		messageID := "chatcmpl-" + req.Model
 
 		processEvent := func(event wsrelay.StreamEvent) bool {
@@ -218,7 +205,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				return
 			}
 		}
-	}(firstEvent)
+	}(firstEvent, estimatedInputTokens)
 	return stream, nil
 }
 
@@ -300,6 +287,47 @@ func (e *AIStudioExecutor) translateRequest(req cliproxyexecutor.Request, opts c
 	}
 	payload, _ = sjson.DeleteBytes(payload, "session_id")
 	return payload, translatedPayload{payload: payload, action: action, toFormat: formatGemini}, nil
+}
+
+// translateRequestWithTokens is similar to translateRequest but also returns estimated input tokens.
+// This is more efficient as translation and token counting share the same IR.
+func (e *AIStudioExecutor) translateRequestWithTokens(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (translatedPayload, int64, error) {
+	from := opts.SourceFormat
+	formatGemini := sdktranslator.FromString("gemini")
+
+	// Use the new combined translation + token counting function
+	translation, err := TranslateToGeminiWithTokens(e.cfg, from, req.Model, bytes.Clone(req.Payload), stream, req.Metadata)
+	if err != nil {
+		return translatedPayload{}, 0, fmt.Errorf("translate request: %w", err)
+	}
+
+	payload := translation.Payload
+	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
+		if budgetOverride != nil {
+			norm := util.NormalizeThinkingBudget(req.Model, *budgetOverride)
+			budgetOverride = &norm
+		}
+		payload = util.ApplyGeminiThinkingConfig(payload, budgetOverride, includeOverride)
+	}
+	payload = util.StripThinkingConfigIfUnsupported(req.Model, payload)
+	payload = applyPayloadConfig(e.cfg, req.Model, payload)
+	payload, _ = sjson.DeleteBytes(payload, "generationConfig.maxOutputTokens")
+	payload, _ = sjson.DeleteBytes(payload, "generationConfig.responseMimeType")
+	payload, _ = sjson.DeleteBytes(payload, "generationConfig.responseJsonSchema")
+
+	metadataAction := "generateContent"
+	if req.Metadata != nil {
+		if action, _ := req.Metadata["action"].(string); action == "countTokens" {
+			metadataAction = action
+		}
+	}
+	action := metadataAction
+	if stream && action != "countTokens" {
+		action = "streamGenerateContent"
+	}
+	payload, _ = sjson.DeleteBytes(payload, "session_id")
+
+	return translatedPayload{payload: payload, action: action, toFormat: formatGemini}, translation.EstimatedInputTokens, nil
 }
 
 func (e *AIStudioExecutor) buildEndpoint(model, action, alt string) string {

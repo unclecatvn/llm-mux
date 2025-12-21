@@ -271,7 +271,13 @@ func ToClaudeSSE(event ir.UnifiedEvent, model, messageID string, state *ClaudeSt
 			"message": map[string]any{
 				"id": messageID, "type": "message", "role": ir.ClaudeRoleAssistant,
 				"content": []any{}, "model": model, "stop_reason": nil, "stop_sequence": nil,
-				"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": int64(0)},
+				"usage": map[string]any{
+					"input_tokens":  inputTokens,
+					"output_tokens": int64(1), // Match Claude API: first output token
+					// Include cache fields for schema completeness (will be updated in message_delta)
+					"cache_creation_input_tokens": int64(0),
+					"cache_read_input_tokens":     int64(0),
+				},
 			},
 		}))
 	}

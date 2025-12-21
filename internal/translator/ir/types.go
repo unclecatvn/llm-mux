@@ -38,16 +38,21 @@ const (
 type FinishReason string
 
 // Unified/normalized finish reasons (used in IR)
+// These are the canonical reasons used internally. Provider-specific reasons
+// are mapped to/from these in the mapping functions (MapXxxFinishReason, MapFinishReasonToXxx).
+//
+// Consolidation notes:
+// - FinishReasonMaxTokens: Used for both OpenAI "length" and Claude/Gemini "max_tokens"
+// - FinishReasonStop: Used for both normal completion and Claude "end_turn"
+// - FinishReasonStopSequence: Specifically for stop sequence triggers (Claude distinction)
 const (
-	FinishReasonStop          FinishReason = "stop"
-	FinishReasonLength        FinishReason = "length"
-	FinishReasonToolCalls     FinishReason = "tool_calls"
-	FinishReasonContentFilter FinishReason = "content_filter"
-	FinishReasonError         FinishReason = "error"
-	FinishReasonUnknown       FinishReason = "unknown"
-	FinishReasonMaxTokens     FinishReason = "max_tokens"
-	FinishReasonStopSequence  FinishReason = "stop_sequence"
-	FinishReasonEndTurn       FinishReason = "end_turn"
+	FinishReasonStop          FinishReason = "stop"           // Normal completion (OpenAI "stop", Claude "end_turn", Gemini "STOP")
+	FinishReasonMaxTokens     FinishReason = "max_tokens"     // Token limit reached (OpenAI "length", Claude/Gemini "max_tokens")
+	FinishReasonToolCalls     FinishReason = "tool_calls"     // Model wants to call tools (OpenAI "tool_calls", Claude "tool_use")
+	FinishReasonContentFilter FinishReason = "content_filter" // Content was filtered (OpenAI "content_filter", Gemini "SAFETY")
+	FinishReasonStopSequence  FinishReason = "stop_sequence"  // Stop sequence matched (Claude-specific, maps to "stop" for OpenAI)
+	FinishReasonError         FinishReason = "error"          // Error occurred
+	FinishReasonUnknown       FinishReason = "unknown"        // Unknown/fallback
 )
 
 // ThinkingLevel represents the level of thinking tokens for thinking models.

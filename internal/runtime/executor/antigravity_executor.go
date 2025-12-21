@@ -198,22 +198,13 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 
 	from := opts.SourceFormat
 
-	// Translate request using canonical translator
-	translated, errTranslate := TranslateToGeminiCLI(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+	// Translate request and count tokens in one operation (uses shared IR)
+	translation, errTranslate := TranslateToGeminiCLIWithTokens(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
 	if errTranslate != nil {
 		return nil, fmt.Errorf("failed to translate request: %w", errTranslate)
 	}
-
-	// Start token counting in parallel (for Claude format)
-	// This runs concurrently with HTTP request, result ready when stream starts
-	tokensChan := make(chan int64, 1)
-	if from.String() == "claude" {
-		go func() {
-			tokensChan <- util.CountTokensFromGeminiRequest(req.Model, translated)
-		}()
-	} else {
-		tokensChan <- 0
-	}
+	translated := translation.Payload
+	estimatedInputTokens := translation.EstimatedInputTokens
 
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
@@ -292,10 +283,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		out := make(chan cliproxyexecutor.StreamChunk)
 		stream = out
 
-		// Get pre-calculated input tokens from parallel goroutine
-		estimatedInputTokens := <-tokensChan
-
-		go func(resp *http.Response) {
+		go func(resp *http.Response, inputTokens int64) {
 			defer close(out)
 			defer func() {
 				if errClose := resp.Body.Close(); errClose != nil {
@@ -308,7 +296,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Initialize streaming state with schema context from original request for tool call normalization
 			streamState := NewAntigravityStreamState(opts.OriginalRequest)
 			// Set pre-calculated input tokens for message_start
-			streamState.ClaudeState.EstimatedInputTokens = estimatedInputTokens
+			streamState.ClaudeState.EstimatedInputTokens = inputTokens
 			messageID := "chatcmpl-" + req.Model
 
 			for scanner.Scan() {
@@ -370,7 +358,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			} else {
 				reporter.ensurePublished(ctx)
 			}
-		}(httpResp)
+		}(httpResp, estimatedInputTokens)
 		return stream, nil
 	}
 

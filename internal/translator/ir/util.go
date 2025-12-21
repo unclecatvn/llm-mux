@@ -438,7 +438,7 @@ func convertMalformedArgsToJSONFallback(argsRaw string) string {
 func MapClaudeFinishReason(claudeReason string) FinishReason {
 	switch claudeReason {
 	case "end_turn":
-		return FinishReasonEndTurn
+		return FinishReasonStop // Claude "end_turn" = normal completion = IR "stop"
 	case "stop_sequence":
 		return FinishReasonStopSequence
 	case "max_tokens":
@@ -455,23 +455,7 @@ func MapOpenAIFinishReason(openaiReason string) FinishReason {
 	case "stop":
 		return FinishReasonStop
 	case "length":
-		return FinishReasonLength
-	case "tool_calls", "function_call":
-		return FinishReasonToolCalls
-	case "content_filter":
-		return FinishReasonContentFilter
-	default:
-		return FinishReasonUnknown
-	}
-}
-
-// MapOpenAIFinishReasonExtended maps OpenAI finish reasons with extended reason types
-func MapOpenAIFinishReasonExtended(openaiReason string) FinishReason {
-	switch openaiReason {
-	case "stop":
-		return FinishReasonStop
-	case "length":
-		return FinishReasonMaxTokens
+		return FinishReasonMaxTokens // OpenAI "length" = IR "max_tokens"
 	case "tool_calls", "function_call":
 		return FinishReasonToolCalls
 	case "content_filter":
@@ -483,13 +467,13 @@ func MapOpenAIFinishReasonExtended(openaiReason string) FinishReason {
 
 func MapFinishReasonToOpenAI(reason FinishReason) string {
 	switch reason {
-	case FinishReasonLength, FinishReasonMaxTokens:
+	case FinishReasonMaxTokens:
 		return "length"
 	case FinishReasonToolCalls:
 		return "tool_calls"
 	case FinishReasonContentFilter:
 		return "content_filter"
-	case FinishReasonStopSequence, FinishReasonEndTurn:
+	case FinishReasonStopSequence, FinishReasonStop:
 		return "stop"
 	default:
 		return "stop"
@@ -511,8 +495,8 @@ func MapStandardRole(role string) Role {
 
 func MapFinishReasonToClaude(reason FinishReason) string {
 	switch reason {
-	case FinishReasonEndTurn:
-		return "end_turn"
+	case FinishReasonStop:
+		return "end_turn" // IR "stop" = Claude "end_turn"
 	case FinishReasonStopSequence:
 		return "stop_sequence"
 	case FinishReasonMaxTokens:
@@ -528,9 +512,9 @@ func MapFinishReasonToGemini(reason FinishReason) string {
 	switch reason {
 	case FinishReasonStop:
 		return "STOP"
-	case FinishReasonLength, FinishReasonMaxTokens:
+	case FinishReasonMaxTokens:
 		return "MAX_TOKENS"
-	case FinishReasonStopSequence, FinishReasonEndTurn:
+	case FinishReasonStopSequence:
 		return "STOP"
 	case FinishReasonToolCalls:
 		return "STOP"

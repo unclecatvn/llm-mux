@@ -1,24 +1,119 @@
+// Package util provides utility functions for the llm-mux project.
 package util
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 
-	"github.com/tidwall/gjson"
+	"github.com/nghyane/llm-mux/internal/translator/ir"
 	"google.golang.org/genai"
 	"google.golang.org/genai/tokenizer"
 )
 
+// ImageTokenCost is the fixed token cost per image in Gemini models.
+// This is an approximation based on Gemini's standard image processing.
+const ImageTokenCost = 258
+
+// tokenizerCache caches LocalTokenizer instances by normalized model name.
+// This avoids repeated tokenizer initialization which is expensive.
 var (
-	// tokenizerCache caches tokenizers by model name
 	tokenizerCache   = make(map[string]*tokenizer.LocalTokenizer)
 	tokenizerCacheMu sync.RWMutex
 )
 
-// getOrCreateTokenizer returns a cached tokenizer or creates a new one.
-func getOrCreateTokenizer(model string) (*tokenizer.LocalTokenizer, error) {
-	// Normalize model name for tokenizer (use base model)
-	baseModel := normalizeModelForTokenizer(model)
+// partsPool reduces allocations for genai.Part slices during token counting.
+var partsPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate with typical capacity
+		parts := make([]*genai.Part, 0, 16)
+		return &parts
+	},
+}
 
+// =============================================================================
+// Public API
+// =============================================================================
+
+// CountTokensFromIR counts tokens directly from a unified IR request.
+// This is the primary token counting function - efficient and accurate.
+// It acts as a dispatcher:
+// - Gemini models: Uses google.golang.org/genai/tokenizer (native accuracy)
+// - OpenAI/Claude/Qwen: Uses tiktoken-go (o200k_base/cl100k_base)
+//
+// Returns 0 if counting fails (non-blocking, fail-safe).
+func CountTokensFromIR(model string, req *ir.UnifiedChatRequest) int64 {
+	if req == nil {
+		return 0
+	}
+
+	// Dispatch to appropriate tokenizer
+	if isGeminiModel(model) {
+		return countGeminiTokens(model, req)
+	}
+
+	// For Claude, OpenAI, Qwen, etc.
+	return CountTiktokenTokens(model, req)
+}
+
+// countGeminiTokens implements the specific logic for Gemini token counting.
+func countGeminiTokens(model string, req *ir.UnifiedChatRequest) int64 {
+	tok, err := getTokenizer(model)
+	if err != nil {
+		return 0
+	}
+
+	contents, imageCount := buildContentsFromIR(req)
+
+	// Count message content tokens
+	var contentTokens int64
+	if len(contents) > 0 {
+		if result, err := tok.CountTokens(contents, nil); err == nil {
+			contentTokens = int64(result.TotalTokens)
+		}
+	}
+
+	// Count tool definition tokens
+	toolTokens := countToolTokensFromIR(tok, req.Tools)
+
+	// Calculate total
+	total := contentTokens + toolTokens + int64(imageCount*ImageTokenCost)
+
+	return total
+}
+
+// AsyncCountTokensFromIR starts parallel token counting from IR.
+// Returns a buffered channel that will receive exactly one token count value.
+//
+// Usage:
+//
+//	tokensChan := AsyncCountTokensFromIR(model, irReq)
+//	// ... do other work ...
+//	tokens := <-tokensChan
+func AsyncCountTokensFromIR(model string, req *ir.UnifiedChatRequest) <-chan int64 {
+	ch := make(chan int64, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				ch <- 0 // Fail-safe: return 0 on panic
+			}
+		}()
+		ch <- CountTokensFromIR(model, req)
+	}()
+	return ch
+}
+
+// =============================================================================
+// Internal Implementation
+// =============================================================================
+
+// getTokenizer returns a cached tokenizer for the given model.
+// Uses double-checked locking for thread safety.
+func getTokenizer(model string) (*tokenizer.LocalTokenizer, error) {
+	baseModel := normalizeModel(model)
+
+	// Fast path: check cache with read lock
 	tokenizerCacheMu.RLock()
 	tok, ok := tokenizerCache[baseModel]
 	tokenizerCacheMu.RUnlock()
@@ -26,6 +121,7 @@ func getOrCreateTokenizer(model string) (*tokenizer.LocalTokenizer, error) {
 		return tok, nil
 	}
 
+	// Slow path: create tokenizer with write lock
 	tokenizerCacheMu.Lock()
 	defer tokenizerCacheMu.Unlock()
 
@@ -38,52 +134,181 @@ func getOrCreateTokenizer(model string) (*tokenizer.LocalTokenizer, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	tokenizerCache[baseModel] = tok
 	return tok, nil
 }
 
-// normalizeModelForTokenizer maps model names to tokenizer-compatible names.
-func normalizeModelForTokenizer(model string) string {
-	// Map specific models to their base tokenizer model
+// normalizeModel maps model names to tokenizer-compatible base models.
+// Supported models by google.golang.org/genai/tokenizer (as of v1.40.0):
+//   - gemini-1.0-pro, gemini-1.5-pro, gemini-1.5-flash → gemma2 tokenizer
+//   - gemini-2.0-flash, gemini-2.0-flash-lite → gemma3 tokenizer
+//   - gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite → gemma3 tokenizer
+func normalizeModel(model string) string {
+	lower := strings.ToLower(model)
 	switch {
-	case containsAny(model, "gemini-3", "gemini-2.5", "gemini-2.0"):
-		return "gemini-2.0-flash" // Use 2.0 tokenizer for newer models
-	case containsAny(model, "gemini-1.5"):
+	// Gemini 2.5 series - use gemini-2.5-flash (officially supported)
+	case strings.Contains(lower, "gemini-2.5-flash-lite"):
+		return "gemini-2.5-flash-lite"
+	case strings.Contains(lower, "gemini-2.5-flash"):
+		return "gemini-2.5-flash"
+	case strings.Contains(lower, "gemini-2.5-pro"):
+		return "gemini-2.5-pro"
+	// Gemini 3 series - fallback to gemini-2.5-flash (same gemma3 tokenizer)
+	case strings.Contains(lower, "gemini-3"):
+		return "gemini-2.5-flash"
+	// Gemini 2.0 series
+	case strings.Contains(lower, "gemini-2.0-flash-lite"):
+		return "gemini-2.0-flash-lite"
+	case strings.Contains(lower, "gemini-2.0"):
+		return "gemini-2.0-flash"
+	// Gemini 1.5 series
+	case strings.Contains(lower, "gemini-1.5-pro"):
+		return "gemini-1.5-pro"
+	case strings.Contains(lower, "gemini-1.5"):
 		return "gemini-1.5-flash"
-	case containsAny(model, "gemini-1.0", "gemini-pro"):
+	// Gemini 1.0 series
+	case strings.Contains(lower, "gemini-1.0"),
+		strings.Contains(lower, "gemini-pro"):
 		return "gemini-1.0-pro"
+	// Default to gemini-2.5-flash for unknown models (most current)
 	default:
-		return "gemini-2.0-flash" // Default fallback
+		return "gemini-2.5-flash"
 	}
 }
 
-func containsAny(s string, substrs ...string) bool {
-	for _, sub := range substrs {
-		if len(s) >= len(sub) {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
+// isGeminiModel checks if the model name corresponds to a Gemini model.
+func isGeminiModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "gemini")
+}
+
+// buildContentsFromIR converts IR messages to genai.Content slice for token counting.
+// Returns the contents and total image count.
+func buildContentsFromIR(req *ir.UnifiedChatRequest) ([]*genai.Content, int) {
+	if req == nil || len(req.Messages) == 0 {
+		return nil, 0
+	}
+
+	contents := make([]*genai.Content, 0, len(req.Messages))
+	totalImages := 0
+
+	for i := range req.Messages {
+		content, imageCount := messageToContent(&req.Messages[i])
+		totalImages += imageCount
+		if content != nil {
+			contents = append(contents, content)
+		}
+	}
+
+	return contents, totalImages
+}
+
+// messageToContent converts a single IR message to genai.Content.
+// Returns nil if the message has no countable content.
+// Uses pooled slice to reduce allocations.
+func messageToContent(msg *ir.Message) (*genai.Content, int) {
+	if msg == nil {
+		return nil, 0
+	}
+
+	role := mapRole(msg.Role)
+
+	// Get pooled slice and reset
+	partsPtr := partsPool.Get().(*[]*genai.Part)
+	parts := (*partsPtr)[:0]
+	defer func() {
+		// Clear references before returning to pool
+		for i := range parts {
+			parts[i] = nil
+		}
+		*partsPtr = parts[:0]
+		partsPool.Put(partsPtr)
+	}()
+
+	imageCount := 0
+
+	// Process content parts
+	for i := range msg.Content {
+		part := &msg.Content[i]
+		switch part.Type {
+		case ir.ContentTypeText:
+			if part.Text != "" {
+				parts = append(parts, genai.NewPartFromText(part.Text))
+			}
+
+		case ir.ContentTypeReasoning:
+			if part.Reasoning != "" {
+				parts = append(parts, genai.NewPartFromText(part.Reasoning))
+			}
+
+		case ir.ContentTypeImage:
+			if part.Image != nil {
+				imageCount++
+			}
+
+		case ir.ContentTypeToolResult:
+			if part.ToolResult != nil {
+				text := formatFunctionResponse(part.ToolResult.ToolCallID, part.ToolResult.Result)
+				parts = append(parts, genai.NewPartFromText(text))
+				imageCount += len(part.ToolResult.Images)
+			}
+
+		case ir.ContentTypeFile:
+			if part.File != nil && part.File.FileData != "" {
+				parts = append(parts, genai.NewPartFromText(part.File.FileData))
+			}
+
+		case ir.ContentTypeExecutableCode:
+			if part.CodeExecution != nil && part.CodeExecution.Code != "" {
+				parts = append(parts, genai.NewPartFromText(part.CodeExecution.Code))
+			}
+
+		case ir.ContentTypeCodeResult:
+			if part.CodeExecution != nil && part.CodeExecution.Output != "" {
+				parts = append(parts, genai.NewPartFromText(part.CodeExecution.Output))
 			}
 		}
 	}
-	return false
-}
 
-// CountTokensFromGeminiRequest counts tokens from a Gemini API request payload.
-// Returns the token count or 0 if counting fails (non-blocking).
-func CountTokensFromGeminiRequest(model string, payload []byte) int64 {
-	tok, err := getOrCreateTokenizer(model)
-	if err != nil {
-		return 0 // Fail silently, return 0
+	// Process tool calls (assistant calling tools)
+	for i := range msg.ToolCalls {
+		tc := &msg.ToolCalls[i]
+		text := formatFunctionCall(tc.Name, tc.Args)
+		parts = append(parts, genai.NewPartFromText(text))
 	}
 
-	contents := extractContentsFromPayload(payload)
-	if len(contents) == 0 {
+	if len(parts) == 0 {
+		return nil, imageCount
+	}
+
+	// Copy parts to a new slice (pool slice will be recycled)
+	resultParts := make([]*genai.Part, len(parts))
+	copy(resultParts, parts)
+
+	return &genai.Content{Role: role, Parts: resultParts}, imageCount
+}
+
+// countToolTokensFromIR counts tokens from tool definitions.
+// Uses efficient JSON serialization with pre-allocated buffer.
+func countToolTokensFromIR(tok *tokenizer.LocalTokenizer, tools []ir.ToolDefinition) int64 {
+	if len(tools) == 0 {
 		return 0
 	}
 
-	result, err := tok.CountTokens(contents, nil)
+	// Serialize tools to JSON for counting
+	// Note: json.Marshal is acceptable here as tools are typically small
+	// and this runs async. For hot paths, consider a custom serializer.
+	toolsJSON, err := json.Marshal(tools)
+	if err != nil {
+		return 0
+	}
+
+	content := &genai.Content{
+		Role:  "user",
+		Parts: []*genai.Part{genai.NewPartFromText(string(toolsJSON))},
+	}
+
+	result, err := tok.CountTokens([]*genai.Content{content}, nil)
 	if err != nil {
 		return 0
 	}
@@ -91,71 +316,26 @@ func CountTokensFromGeminiRequest(model string, payload []byte) int64 {
 	return int64(result.TotalTokens)
 }
 
-// extractContentsFromPayload extracts genai.Content from Gemini request payload.
-// Supports both standard Gemini format and Antigravity/GeminiCLI format (nested in "request").
-func extractContentsFromPayload(payload []byte) []*genai.Content {
-	var contents []*genai.Content
+// =============================================================================
+// Helper Functions
+// =============================================================================
 
-	// Check if contents is nested under "request" (Antigravity/GeminiCLI format)
-	contentsPath := "contents"
-	systemPath := "systemInstruction"
-	if gjson.GetBytes(payload, "request.contents").Exists() {
-		contentsPath = "request.contents"
-		systemPath = "request.systemInstruction"
+// mapRole converts IR role to Gemini role string.
+func mapRole(role ir.Role) string {
+	switch role {
+	case ir.RoleAssistant:
+		return "model"
+	default:
+		return "user"
 	}
-
-	// Extract system instruction if present
-	systemInstruction := gjson.GetBytes(payload, systemPath)
-	if systemInstruction.Exists() {
-		if content := parseContent(systemInstruction, "user"); content != nil {
-			contents = append(contents, content)
-		}
-	}
-
-	// Extract contents array
-	contentsArr := gjson.GetBytes(payload, contentsPath)
-	if !contentsArr.IsArray() {
-		return contents
-	}
-
-	contentsArr.ForEach(func(_, value gjson.Result) bool {
-		role := value.Get("role").String()
-		if role == "" {
-			role = "user"
-		}
-		if content := parseContent(value, role); content != nil {
-			contents = append(contents, content)
-		}
-		return true
-	})
-
-	return contents
 }
 
-// parseContent parses a gjson.Result into genai.Content.
-func parseContent(value gjson.Result, role string) *genai.Content {
-	parts := value.Get("parts")
-	if !parts.IsArray() {
-		return nil
-	}
+// formatFunctionCall creates a text representation of a function call for token counting.
+func formatFunctionCall(name, args string) string {
+	return fmt.Sprintf("<functionCall name=%q>%s</functionCall>", name, args)
+}
 
-	var genaiParts []*genai.Part
-	parts.ForEach(func(_, part gjson.Result) bool {
-		// Handle text parts
-		if text := part.Get("text"); text.Exists() {
-			genaiParts = append(genaiParts, genai.NewPartFromText(text.String()))
-		}
-		// Note: Images/audio would need different handling
-		// For now, we only count text tokens (most accurate for context window)
-		return true
-	})
-
-	if len(genaiParts) == 0 {
-		return nil
-	}
-
-	return &genai.Content{
-		Role:  role,
-		Parts: genaiParts,
-	}
+// formatFunctionResponse creates a text representation of a function response for token counting.
+func formatFunctionResponse(name, result string) string {
+	return fmt.Sprintf("<functionResponse name=%q>%s</functionResponse>", name, result)
 }

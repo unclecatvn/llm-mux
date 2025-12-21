@@ -159,10 +159,14 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToGemini(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+
+	// Translate request and count tokens in one operation (uses shared IR)
+	translation, err := TranslateToGeminiWithTokens(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("translate request: %w", err)
 	}
+
+	body := translation.Payload
 	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
 		if budgetOverride != nil {
 			norm := util.NormalizeThinkingBudget(req.Model, *budgetOverride)
@@ -172,17 +176,6 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 	body = util.StripThinkingConfigIfUnsupported(req.Model, body)
 	body = applyPayloadConfig(e.cfg, req.Model, body)
-
-	// Start token counting in parallel (for Claude format)
-	// This runs concurrently with HTTP request, result ready when stream starts
-	tokensChan := make(chan int64, 1)
-	if from.String() == "claude" {
-		go func() {
-			tokensChan <- util.CountTokensFromGeminiRequest(req.Model, body)
-		}()
-	} else {
-		tokensChan <- 0
-	}
 
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, req.Model, "streamGenerateContent")
@@ -223,8 +216,8 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	out := make(chan cliproxyexecutor.StreamChunk)
 	stream = out
 
-	// Get pre-calculated input tokens from parallel goroutine
-	estimatedInputTokens := <-tokensChan
+	// Use pre-calculated input tokens from translation
+	estimatedInputTokens := translation.EstimatedInputTokens
 
 	go func() {
 		defer close(out)

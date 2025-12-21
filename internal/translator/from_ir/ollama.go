@@ -505,10 +505,10 @@ func OpenAIChunkToOllamaGenerate(rawJSON []byte, model string) ([]byte, error) {
 
 func mapFinishReasonToOllama(reason ir.FinishReason) string {
 	switch reason {
-	case ir.FinishReasonStop:
+	case ir.FinishReasonStop, ir.FinishReasonStopSequence:
 		return "stop"
-	case ir.FinishReasonLength:
-		return "length"
+	case ir.FinishReasonMaxTokens:
+		return "length" // IR "max_tokens" = Ollama "length"
 	case ir.FinishReasonToolCalls:
 		return "tool_calls"
 	default:

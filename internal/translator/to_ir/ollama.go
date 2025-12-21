@@ -338,7 +338,7 @@ func mapOllamaDoneReason(r string) ir.FinishReason {
 	case "stop":
 		return ir.FinishReasonStop
 	case "length":
-		return ir.FinishReasonLength
+		return ir.FinishReasonMaxTokens // Ollama "length" = IR "max_tokens"
 	case "tool_calls":
 		return ir.FinishReasonToolCalls
 	default:
