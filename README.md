@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue)](https://github.com/nghyane/llm-mux)
 [![Go Version](https://img.shields.io/badge/go-1.24-cyan)](https://golang.org)
 
-**Use Claude, Gemini, GPT-4, and Copilot for FREE.** A local AI gateway that lets you access premium AI models without API keys—just OAuth login.
+**Use Claude, Gemini, GPT-5, and Copilot for FREE.** A local AI gateway that lets you access premium AI models without API keys—just OAuth login.
 
 > **Works with:** Cursor, Cline, Aider, Continue, Windsurf, VS Code, and any OpenAI-compatible tool.
 
@@ -12,9 +12,9 @@
 graph LR
     Tools[Cursor / Cline / Aider] -->|OpenAI Format| Mux[llm-mux :8318]
     Mux -->|OAuth| Gemini[Gemini 2.5/3.0]
-    Mux -->|OAuth| Claude[Claude 4 Sonnet]
-    Mux -->|OAuth| Copilot[GPT-4.1 / GPT-5]
-    Mux -->|OAuth| More[Kiro / Qwen / iFlow]
+    Mux -->|OAuth| Claude[Claude 4/4.5]
+    Mux -->|OAuth| Copilot[GPT-4.1 / GPT-5.1]
+    Mux -->|OAuth| More[Qwen / Kiro / iFlow]
 ```
 
 ## Why llm-mux?
@@ -133,10 +133,10 @@ llm-mux --cline-login        # Cline API
 
 | Provider | Popular Models | Context |
 |:---------|:---------------|:--------|
-| **Gemini** | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-3-flash-preview` | 1M tokens |
-| **Claude** | `claude-sonnet-4-20250514`, `claude-3-5-sonnet`, `claude-3-opus` | 200K tokens |
-| **Copilot** | `gpt-4.1`, `gpt-4o`, `gpt-5-mini`, `gpt-5.1-codex-max` | 128K tokens |
-| **Kiro** | `amazon-q-developer` | 128K tokens |
+| **Gemini** | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-3-flash`, `gemini-3-pro-preview` | 1M tokens |
+| **Claude** | `claude-sonnet-4-20250514`, `claude-opus-4-5-20251101`, `claude-sonnet-4-5-thinking` | 200K tokens |
+| **Copilot** | `gpt-4.1`, `gpt-4o`, `gpt-5`, `gpt-5.1-codex-max` | 128K tokens |
+| **Qwen** | `qwen3-coder-plus`, `qwen3-coder-flash` | 128K tokens |
 
 > Full list: `curl http://localhost:8318/v1/models`
 
