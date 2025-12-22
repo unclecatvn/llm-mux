@@ -1091,9 +1091,14 @@ func GetGitHubCopilotModels() []*ModelInfo {
 		Created     int64
 	}{
 		{ID: "gpt-4.1", DisplayName: "GPT-4.1", Description: "OpenAI GPT-4.1 via GitHub Copilot", Created: 1754524800},
-		{ID: "gpt-4o", DisplayName: "GPT-4o", Description: "OpenAI GPT-4o via GitHub Copilot", Created: 1715558400},
+		{ID: "gpt-5", DisplayName: "GPT-5", Description: "OpenAI GPT-5 via GitHub Copilot", Created: 1762473600},
 		{ID: "gpt-5-mini", DisplayName: "GPT-5 Mini", Description: "OpenAI GPT-5 Mini via GitHub Copilot", Created: 1762473600},
+		{ID: "gpt-5.1", DisplayName: "GPT-5.1", Description: "OpenAI GPT-5.1 via GitHub Copilot", Created: 1763424000},
+		{ID: "gpt-5.1-codex", DisplayName: "GPT-5.1 Codex", Description: "OpenAI GPT-5.1 Codex via GitHub Copilot", Created: 1763424000},
+		{ID: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex Mini", Description: "OpenAI GPT-5.1 Codex Mini via GitHub Copilot", Created: 1763424000},
 		{ID: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max", Description: "OpenAI GPT-5.1 Codex Max via GitHub Copilot", Created: 1763424000},
+		{ID: "gpt-5-codex", DisplayName: "GPT-5 Codex", Description: "OpenAI GPT-5 Codex via GitHub Copilot", Created: 1762473600},
+		{ID: "gpt-5.2", DisplayName: "GPT-5.2", Description: "OpenAI GPT-5.2 via GitHub Copilot", Created: 1763424000},
 	}
 	models := make([]*ModelInfo, 0, len(entries))
 	for _, entry := range entries {

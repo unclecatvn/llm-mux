@@ -400,7 +400,6 @@ func getTiktokenEncodingName(model string) tokenizer.Encoding {
 
 	switch {
 	case strings.Contains(lower, "gpt-5"),
-		strings.Contains(lower, "gpt-4o"),
 		strings.Contains(lower, "claude"),
 		strings.Contains(lower, "qwen"),
 		strings.Contains(lower, "antigravity"):

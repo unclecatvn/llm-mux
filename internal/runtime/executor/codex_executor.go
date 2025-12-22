@@ -324,6 +324,8 @@ func (e *CodexExecutor) setReasoningEffortByAlias(modelName string, payload []by
 		case "gpt-5.1-codex-max-xhigh":
 			payload, _ = sjson.SetBytes(payload, "reasoning.effort", "xhigh")
 		}
+	} else if util.InArray([]string{"gpt-5.2"}, modelName) {
+		payload, _ = sjson.SetBytes(payload, "model", "gpt-5.2")
 	}
 	return payload
 }
@@ -337,8 +339,6 @@ func tokenizerForCodexModel(model string) (tokenizer.Codec, error) {
 		return tokenizer.ForModel(tokenizer.GPT5)
 	case strings.HasPrefix(sanitized, "gpt-4.1"):
 		return tokenizer.ForModel(tokenizer.GPT41)
-	case strings.HasPrefix(sanitized, "gpt-4o"):
-		return tokenizer.ForModel(tokenizer.GPT4o)
 	case strings.HasPrefix(sanitized, "gpt-4"):
 		return tokenizer.ForModel(tokenizer.GPT4)
 	case strings.HasPrefix(sanitized, "gpt-3.5"), strings.HasPrefix(sanitized, "gpt-3"):
@@ -532,7 +532,7 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string) {
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "0.21.0")
 	misc.EnsureHeader(r.Header, ginHeaders, "Openai-Beta", "responses=experimental")
 	misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
-	misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", "codex_cli_rs/0.50.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464")
+	misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", "codex_cli_rs/1.104.1 (Mac OS 26.0.1; arm64) Apple_Terminal/464")
 
 	r.Header.Set("Accept", "text/event-stream")
 	r.Header.Set("Connection", "Keep-Alive")

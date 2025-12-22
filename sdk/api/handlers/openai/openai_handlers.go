@@ -75,11 +75,8 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 			filteredModel["created"] = created
 		}
 
-		// Add owned_by field if it exists
-		if ownedBy, exists := model["owned_by"]; exists {
-			filteredModel["owned_by"] = ownedBy
-		}
-
+		// Add owned_by
+		filteredModel["owned_by"] = model["owned_by"]
 		filteredModels[i] = filteredModel
 	}
 

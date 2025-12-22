@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nghyane/llm-mux/internal/interfaces"
+	"github.com/nghyane/llm-mux/internal/registry"
 	"github.com/nghyane/llm-mux/internal/util"
 	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 	coreexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
@@ -41,6 +42,21 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager, op
 }
 
 func (h *BaseAPIHandler) UpdateClients(cfg *config.SDKConfig) { h.Cfg = cfg }
+
+// Models returns all available models as maps.
+func (h *BaseAPIHandler) Models() []map[string]any {
+	regModels := registry.GetGlobalRegistry().GetAllModels()
+	models := make([]map[string]any, len(regModels))
+	for i, m := range regModels {
+		models[i] = map[string]any{
+			"id":       m.ID,
+			"object":   m.Object,
+			"created":  m.Created,
+			"owned_by": m.OwnedBy,
+		}
+	}
+	return models
+}
 
 func (h *BaseAPIHandler) GetAlt(c *gin.Context) string {
 	alt, hasAlt := c.GetQuery("alt")

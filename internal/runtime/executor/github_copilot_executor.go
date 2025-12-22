@@ -27,7 +27,7 @@ const (
 	tokenExpiryBuffer          = 5 * time.Minute
 
 	copilotUserAgent     = "GithubCopilot/1.0"
-	copilotEditorVersion = "vscode/1.100.0"
+	copilotEditorVersion = "vscode/1.104.1"
 	copilotPluginVersion = "copilot/1.300.0"
 	copilotIntegrationID = "vscode-chat"
 	copilotOpenAIIntent  = "conversation-panel"
