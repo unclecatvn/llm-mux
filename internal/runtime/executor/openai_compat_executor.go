@@ -179,6 +179,13 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		streamState := &OpenAIStreamState{}
 		messageID := "chatcmpl-" + req.Model
 		for scanner.Scan() {
+			// Check context cancellation before processing each line
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Bytes()
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
 				reporter.publish(ctx, detail)
@@ -189,21 +196,35 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			// Translate OpenAI stream chunks to target format
 			translatedChunks, errTranslate := TranslateOpenAIResponseStream(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
 			if errTranslate != nil {
-				out <- cliproxyexecutor.StreamChunk{Err: errTranslate}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errTranslate}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			if translatedChunks != nil {
 				for _, chunk := range translatedChunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+					case <-ctx.Done():
+						return
+					}
 				}
 			} else {
 				// passthrough
-				out <- cliproxyexecutor.StreamChunk{Payload: line}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: line}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		}
 		// Ensure we record the request if no usage chunk was ever seen
 		reporter.ensurePublished(ctx)
@@ -331,8 +352,8 @@ func (e statusErr) Error() string {
 	}
 	return fmt.Sprintf("status %d", e.code)
 }
-func (e statusErr) StatusCode() int               { return e.code }
-func (e statusErr) RetryAfter() *time.Duration    { return e.retryAfter }
+func (e statusErr) StatusCode() int                      { return e.code }
+func (e statusErr) RetryAfter() *time.Duration           { return e.retryAfter }
 func (e statusErr) Category() cliproxyauth.ErrorCategory { return e.category }
 
 // newCategorizedError creates a statusErr with automatic category classification

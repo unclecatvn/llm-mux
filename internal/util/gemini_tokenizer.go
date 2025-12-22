@@ -88,31 +88,9 @@ func countGeminiTokens(model string, req *ir.UnifiedChatRequest) int64 {
 	// Count tool definition tokens
 	toolTokens := countToolTokensFromIR(tok, req.Tools)
 
-	// Calculate total
 	total := contentTokens + toolTokens + int64(imageCount*ImageTokenCost)
 
 	return total
-}
-
-// AsyncCountTokensFromIR starts parallel token counting from IR.
-// Returns a buffered channel that will receive exactly one token count value.
-//
-// Usage:
-//
-//	tokensChan := AsyncCountTokensFromIR(model, irReq)
-//	// ... do other work ...
-//	tokens := <-tokensChan
-func AsyncCountTokensFromIR(model string, req *ir.UnifiedChatRequest) <-chan int64 {
-	ch := make(chan int64, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- 0 // Fail-safe: return 0 on panic
-			}
-		}()
-		ch <- CountTokensFromIR(model, req)
-	}()
-	return ch
 }
 
 // =============================================================================

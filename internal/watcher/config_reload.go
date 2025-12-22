@@ -25,11 +25,20 @@ func (w *Watcher) scheduleConfigReload() {
 		w.configReloadMu.Lock()
 		w.configReloadTimer = nil
 		w.configReloadMu.Unlock()
-		w.reloadConfigIfChanged()
+		w.doReloadConfigIfChanged()
 	})
 }
 
 func (w *Watcher) reloadConfigIfChanged() {
+	// Public entry point - just delegate to the implementation
+	w.doReloadConfigIfChanged()
+}
+
+func (w *Watcher) doReloadConfigIfChanged() {
+	// Serialize entire reload check-and-execute to prevent race conditions
+	w.configReloadMu.Lock()
+	defer w.configReloadMu.Unlock()
+
 	data, err := os.ReadFile(w.configPath)
 	if err != nil {
 		log.Errorf("failed to read config file for hash check: %v", err)

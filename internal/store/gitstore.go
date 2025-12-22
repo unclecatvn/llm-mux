@@ -261,6 +261,7 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 			return "", fmt.Errorf("auth filestore: write temp failed: %w", errWrite)
 		}
 		if errRename := os.Rename(tmp, path); errRename != nil {
+			_ = os.Remove(tmp) // cleanup temp file on rename failure
 			return "", fmt.Errorf("auth filestore: rename failed: %w", errRename)
 		}
 	default:

@@ -28,6 +28,7 @@ type attemptInfo struct {
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
 	cfg                 *config.Config
+	cfgMu               sync.RWMutex // protects cfg for concurrent read/write during hot-reload
 	configFilePath      string
 	mu                  sync.Mutex
 	attemptsMu          sync.Mutex
@@ -58,7 +59,18 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
-func (h *Handler) SetConfig(cfg *config.Config) { h.cfg = cfg }
+func (h *Handler) SetConfig(cfg *config.Config) {
+	h.cfgMu.Lock()
+	h.cfg = cfg
+	h.cfgMu.Unlock()
+}
+
+// getConfig returns the current config with proper synchronization.
+func (h *Handler) getConfig() *config.Config {
+	h.cfgMu.RLock()
+	defer h.cfgMu.RUnlock()
+	return h.cfg
+}
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
 func (h *Handler) SetAuthManager(manager *coreauth.Manager) { h.authManager = manager }
@@ -97,7 +109,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
-		cfg := h.cfg
+		cfg := h.getConfig()
 		var allowRemote bool
 		if cfg != nil {
 			allowRemote = cfg.RemoteManagement.AllowRemote
@@ -215,7 +227,8 @@ func (h *Handler) persist(c *gin.Context) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
+	cfg := h.getConfig()
+	if err := config.SaveConfigPreserveComments(h.configFilePath, cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}

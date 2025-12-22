@@ -33,7 +33,6 @@ func startCallbackForwarder(port int, provider, targetBase string) (any, error) 
 	return callbackForwardersMgr.StartForwarder(port, provider, targetBase)
 }
 
-
 func extractLastRefreshTimestamp(meta map[string]any) (time.Time, bool) {
 	if len(meta) == 0 {
 		return time.Time{}, false
@@ -86,7 +85,6 @@ func parseLastRefreshValue(v any) (time.Time, bool) {
 	}
 	return time.Time{}, false
 }
-
 
 func (h *Handler) managementCallbackURL(path string) (string, error) {
 	if h == nil || h.cfg == nil || h.cfg.Port <= 0 {
@@ -335,7 +333,9 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "name must end with .json"})
 		return
 	}
-	data, err := io.ReadAll(c.Request.Body)
+	// Limit request body to 1MB to prevent DoS attacks
+	const maxAuthFileSize = 1 * 1024 * 1024
+	data, err := io.ReadAll(io.LimitReader(c.Request.Body, maxAuthFileSize))
 	if err != nil {
 		c.JSON(400, gin.H{"error": "failed to read body"})
 		return

@@ -214,10 +214,17 @@ func (w *Watcher) getAuthQueue() chan<- AuthUpdate {
 }
 
 func (w *Watcher) stopDispatch() {
-	if w.dispatchCancel != nil {
-		w.dispatchCancel()
-		w.dispatchCancel = nil
+	// Safely retrieve and clear dispatchCancel under lock
+	w.clientsMutex.Lock()
+	cancel := w.dispatchCancel
+	w.dispatchCancel = nil
+	w.clientsMutex.Unlock()
+
+	// Cancel outside of lock to avoid holding lock during cancellation
+	if cancel != nil {
+		cancel()
 	}
+
 	w.dispatchMu.Lock()
 	w.pendingOrder = nil
 	w.pendingUpdates = nil
@@ -225,6 +232,7 @@ func (w *Watcher) stopDispatch() {
 		w.dispatchCond.Broadcast()
 	}
 	w.dispatchMu.Unlock()
+
 	w.clientsMutex.Lock()
 	w.authQueue = nil
 	w.clientsMutex.Unlock()

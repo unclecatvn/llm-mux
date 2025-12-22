@@ -36,10 +36,10 @@ const (
 
 // GitHubCopilotExecutor handles requests to the GitHub Copilot API.
 type GitHubCopilotExecutor struct {
-	cfg      *config.Config
-	mu       sync.RWMutex
-	cache    map[string]*cachedCopilotToken
-	sfGroup  singleflight.Group
+	cfg     *config.Config
+	mu      sync.RWMutex
+	cache   map[string]*cachedCopilotToken
+	sfGroup singleflight.Group
 }
 
 type cachedCopilotToken struct {
@@ -175,6 +175,13 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		streamState := &OpenAIStreamState{}
 
 		for scanner.Scan() {
+			// Check context cancellation before processing each line
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Bytes()
 
 			if bytes.HasPrefix(line, dataTag) {
@@ -190,17 +197,27 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			// Translate stream chunk from OpenAI format
 			translatedChunks, errTranslate := TranslateOpenAIResponseStream(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
 			if errTranslate != nil {
-				out <- cliproxyexecutor.StreamChunk{Err: errTranslate}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errTranslate}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			for _, chunk := range translatedChunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		} else {
 			reporter.ensurePublished(ctx)
 		}

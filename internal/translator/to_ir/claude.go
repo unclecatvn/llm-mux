@@ -81,8 +81,8 @@ func ParseClaudeRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 
 			// Handle Claude built-in tools (web_search, computer, etc.)
 			// Official format: {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
-			// Also support simple format: {"type": "web_search", "name": "web_search"}
-			if strings.HasPrefix(toolType, "web_search") || toolName == "web_search" {
+			// IMPORTANT: Only treat as Claude built-in if it has the versioned type AND no input_schema.
+			if strings.HasPrefix(toolType, "web_search_") && !t.Get("input_schema").Exists() {
 				if req.Metadata == nil {
 					req.Metadata = make(map[string]any)
 				}
@@ -96,7 +96,7 @@ func ParseClaudeRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 			}
 
 			// Claude computer use tool: {"type": "computer_20241022", "name": "computer", ...}
-			if strings.HasPrefix(toolType, "computer") || toolName == "computer" {
+			if strings.HasPrefix(toolType, "computer_") && !t.Get("input_schema").Exists() {
 				if req.Metadata == nil {
 					req.Metadata = make(map[string]any)
 				}
@@ -116,7 +116,7 @@ func ParseClaudeRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 			}
 
 			// Claude bash tool: {"type": "bash_20241022", "name": "bash"}
-			if strings.HasPrefix(toolType, "bash") || toolName == "bash" {
+			if strings.HasPrefix(toolType, "bash_") && !t.Get("input_schema").Exists() {
 				if req.Metadata == nil {
 					req.Metadata = make(map[string]any)
 				}
@@ -125,7 +125,7 @@ func ParseClaudeRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 			}
 
 			// Claude text editor tool: {"type": "text_editor_20241022", "name": "str_replace_editor"}
-			if strings.HasPrefix(toolType, "text_editor") || toolName == "str_replace_editor" {
+			if strings.HasPrefix(toolType, "text_editor_") && !t.Get("input_schema").Exists() {
 				if req.Metadata == nil {
 					req.Metadata = make(map[string]any)
 				}

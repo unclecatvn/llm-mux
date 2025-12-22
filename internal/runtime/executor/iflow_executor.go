@@ -172,6 +172,13 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
 		var streamState *OpenAIStreamState
 		for scanner.Scan() {
+			// Check context cancellation before processing each line
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Bytes()
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
 				reporter.publish(ctx, detail)
@@ -179,16 +186,26 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			chunks, err := TranslateOpenAIResponseStream(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
 			if err != nil {
 				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: err}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: err}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			for _, chunk := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		}
 		// Guarantee a usage record exists even if the stream never emitted usage data.
 		reporter.ensurePublished(ctx)

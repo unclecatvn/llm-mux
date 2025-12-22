@@ -210,6 +210,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
 
 			for scanner.Scan() {
+				// Check context cancellation before processing each line
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				line := scanner.Bytes()
 				if detail, ok := parseClaudeStreamUsage(line); ok {
 					reporter.publish(ctx, detail)
@@ -220,11 +227,18 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				cloned := make([]byte, len(line)+1)
 				copy(cloned, line)
 				cloned[len(line)] = '\n'
-				out <- cliproxyexecutor.StreamChunk{Payload: cloned}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: cloned}:
+				case <-ctx.Done():
+					return
+				}
 			}
 			if errScan := scanner.Err(); errScan != nil {
 				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+				case <-ctx.Done():
+				}
 			}
 			return
 		}
@@ -235,6 +249,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		messageID := "msg-" + req.Model
 
 		for scanner.Scan() {
+			// Check context cancellation before processing each line
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Bytes()
 			if detail, ok := parseClaudeStreamUsage(line); ok {
 				reporter.publish(ctx, detail)
@@ -243,13 +264,20 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			translatedChunks, errTranslate := TranslateClaudeResponseStream(e.cfg, from, line, req.Model, messageID, nil)
 			if errTranslate == nil && translatedChunks != nil {
 				for _, chunk := range translatedChunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 	return stream, nil

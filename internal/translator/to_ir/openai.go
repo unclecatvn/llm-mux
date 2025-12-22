@@ -86,8 +86,7 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 			toolType := t.Get("type").String()
 
 			// OpenAI official web search: {"type": "web_search_preview"}
-			// Also support variations like "web_search_preview_2025_03_11"
-			if strings.HasPrefix(toolType, "web_search") {
+			if strings.HasPrefix(toolType, "web_search") && !t.Get("function").Exists() {
 				if req.Metadata == nil {
 					req.Metadata = make(map[string]any)
 				}
@@ -109,7 +108,7 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 			}
 
 			// OpenAI code_interpreter tool → maps to Gemini codeExecution
-			if toolType == "code_interpreter" {
+			if toolType == "code_interpreter" && !t.Get("function").Exists() {
 				if req.Metadata == nil {
 					req.Metadata = make(map[string]any)
 				}
@@ -126,7 +125,7 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 			}
 
 			// OpenAI file_search tool → maps to Gemini fileSearch (if supported)
-			if toolType == "file_search" {
+			if toolType == "file_search" && !t.Get("function").Exists() {
 				if req.Metadata == nil {
 					req.Metadata = make(map[string]any)
 				}

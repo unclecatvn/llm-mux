@@ -27,7 +27,7 @@ const (
 	VideoTokenCost = 2000
 )
 
-const maxPooledBuilderCap = 256 * 1024 // 256KB
+const maxPooledBuilderCap = 256 * 1024
 
 var stringBuilderPool = sync.Pool{
 	New: func() any {

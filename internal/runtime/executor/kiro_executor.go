@@ -265,11 +265,11 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, r
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
-	go e.processStream(resp, req.Model, out)
+	go e.processStream(ctx, resp, req.Model, out)
 	return out, nil
 }
 
-func (e *KiroExecutor) processStream(resp *http.Response, model string, out chan<- cliproxyexecutor.StreamChunk) {
+func (e *KiroExecutor) processStream(ctx context.Context, resp *http.Response, model string, out chan<- cliproxyexecutor.StreamChunk) {
 	defer resp.Body.Close()
 	defer close(out)
 
@@ -280,6 +280,13 @@ func (e *KiroExecutor) processStream(resp *http.Response, model string, out chan
 	idx := 0
 
 	for scanner.Scan() {
+		// Check context cancellation before processing each event
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		payload, err := parseEventPayload(scanner.Bytes())
 		if err != nil {
 			continue
@@ -287,15 +294,22 @@ func (e *KiroExecutor) processStream(resp *http.Response, model string, out chan
 		events, _ := state.ProcessChunk(payload)
 		for _, ev := range events {
 			if chunk, _ := from_ir.ToOpenAIChunk(ev, model, messageID, idx); len(chunk) > 0 {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
-				idx++
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+					idx++
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
 
 	finish := ir.UnifiedEvent{Type: ir.EventTypeFinish, FinishReason: state.DetermineFinishReason()}
 	if chunk, _ := from_ir.ToOpenAIChunk(finish, model, messageID, idx); len(chunk) > 0 {
-		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+		select {
+		case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+		case <-ctx.Done():
+		}
 	}
 	// Note: [DONE] is sent by the handler (openai_handlers.go) when channel closes
 	// Do NOT send it here to avoid duplicate [DONE] markers

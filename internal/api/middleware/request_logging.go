@@ -83,11 +83,12 @@ func captureRequestInfo(c *gin.Context) (*RequestInfo, error) {
 		headers[key] = values
 	}
 
-	// Capture request body
+	// Capture request body (limit to 10MB to prevent memory exhaustion)
+	const maxBodySize = 10 * 1024 * 1024
 	var body []byte
 	if c.Request.Body != nil {
-		// Read the body
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		// Read the body with size limit
+		bodyBytes, err := io.ReadAll(io.LimitReader(c.Request.Body, maxBodySize))
 		if err != nil {
 			return nil, err
 		}

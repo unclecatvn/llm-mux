@@ -124,7 +124,6 @@ func main() {
 	// Core application variables.
 	var err error
 	var cfg *config.Config
-	var isCloudDeploy bool
 	var (
 		usePostgresStore     bool
 		pgStoreDSN           string
@@ -220,13 +219,6 @@ func main() {
 		objectStoreLocalPath = value
 	}
 
-	// Check for cloud deploy mode only on first execution
-	// Read env var name in uppercase: DEPLOY
-	deployEnv := os.Getenv("DEPLOY")
-	if deployEnv == "cloud" {
-		isCloudDeploy = true
-	}
-
 	// Determine and load the configuration file.
 	// Prefer the Postgres store when configured, otherwise fallback to git or local files.
 	var configFilePath string
@@ -252,7 +244,7 @@ func main() {
 		}
 		cancel()
 		configFilePath = pgStoreInst.ConfigPath()
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
+		cfg, err = config.LoadConfigOptional(configFilePath, false)
 		if err == nil {
 			cfg.AuthDir = pgStoreInst.AuthDir()
 			log.Infof("postgres-backed token store enabled, workspace path: %s", pgStoreInst.WorkDir())
@@ -310,7 +302,7 @@ func main() {
 		}
 		cancel()
 		configFilePath = objectStoreInst.ConfigPath()
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
+		cfg, err = config.LoadConfigOptional(configFilePath, false)
 		if err == nil {
 			if cfg == nil {
 				cfg = &config.Config{}
@@ -351,7 +343,7 @@ func main() {
 		} else if statErr != nil {
 			log.Fatalf("failed to inspect git-backed config: %v", statErr)
 		}
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
+		cfg, err = config.LoadConfigOptional(configFilePath, false)
 		if err == nil {
 			cfg.AuthDir = gitStoreInst.AuthDir()
 			log.Infof("git-backed token store enabled, repository path: %s", gitStoreRoot)
@@ -390,26 +382,6 @@ func main() {
 		cfg = config.NewDefaultConfig()
 	}
 
-	// In cloud deploy mode, check if we have a valid configuration
-	var configFileExists bool
-	if isCloudDeploy {
-		if info, errStat := os.Stat(configFilePath); errStat != nil {
-			// Don't mislead: API server will not start until configuration is provided.
-			log.Info("Cloud deploy mode: No configuration file detected; standing by for configuration")
-			configFileExists = false
-		} else if info.IsDir() {
-			log.Info("Cloud deploy mode: Config path is a directory; standing by for configuration")
-			configFileExists = false
-		} else if cfg.Port == 0 {
-			// LoadConfigOptional returns empty config when file is empty or invalid.
-			// Config file exists but is empty or invalid; treat as missing config
-			log.Info("Cloud deploy mode: Configuration file is empty or invalid; standing by for valid configuration")
-			configFileExists = false
-		} else {
-			log.Info("Cloud deploy mode: Configuration file detected; starting service")
-			configFileExists = true
-		}
-	}
 	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
 
 	// Initialize usage persistence if enabled
@@ -490,13 +462,6 @@ func main() {
 	} else if copilotLogin {
 		cmd.DoCopilotLogin(cfg, options)
 	} else {
-		// In cloud deploy mode without config file, just wait for shutdown signals
-		if isCloudDeploy && !configFileExists {
-			// No config file available, just wait for shutdown
-			cmd.WaitForCloudDeploy()
-			return
-		}
-		// Start the main proxy service
 		cmd.StartService(cfg, configFilePath, password)
 	}
 }

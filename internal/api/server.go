@@ -178,18 +178,15 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	for i := range opts {
 		opts[i](optionState)
 	}
-	// Set gin mode
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	// Create gin engine
 	engine := gin.New()
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
 
-	// Add middleware
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
 	for _, mw := range optionState.extraMiddleware {
@@ -216,7 +213,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		wd = configFilePath
 	}
 
-	// Create server instance
 	providerNames := make([]string, 0, len(cfg.OpenAICompatibility))
 	for _, p := range cfg.OpenAICompatibility {
 		providerNames = append(providerNames, p.Name)

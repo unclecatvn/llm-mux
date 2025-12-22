@@ -268,28 +268,6 @@ func TestCountTokensFromIR_LargeToolResult(t *testing.T) {
 	t.Logf("IR with large tool result token count: %d", count)
 }
 
-func TestAsyncCountTokensFromIR(t *testing.T) {
-	req := &ir.UnifiedChatRequest{
-		Model: "gemini-1.5-flash",
-		Messages: []ir.Message{
-			{
-				Role: ir.RoleUser,
-				Content: []ir.ContentPart{
-					{Type: ir.ContentTypeText, Text: "Hello async world"},
-				},
-			},
-		},
-	}
-
-	ch := AsyncCountTokensFromIR("gemini-1.5-flash", req)
-	count := <-ch
-
-	if count <= 0 {
-		t.Errorf("Expected tokens > 0 from async counting, got %d", count)
-	}
-	t.Logf("Async token count: %d", count)
-}
-
 // =============================================================================
 // Model Normalization Tests
 // =============================================================================

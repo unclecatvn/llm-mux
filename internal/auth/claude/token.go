@@ -51,13 +51,11 @@ func (ts *ClaudeTokenStorage) SaveTokenToFile(authFilePath string) error {
 	misc.LogSavingCredentials(authFilePath)
 	ts.Type = "claude"
 
-	// Create directory structure if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(authFilePath), 0700); err != nil {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	// Create the token file
-	f, err := os.Create(authFilePath)
+	f, err := os.OpenFile(authFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
 	}
@@ -65,7 +63,6 @@ func (ts *ClaudeTokenStorage) SaveTokenToFile(authFilePath string) error {
 		_ = f.Close()
 	}()
 
-	// Encode and write the token data as JSON
 	if err = json.NewEncoder(f).Encode(ts); err != nil {
 		return fmt.Errorf("failed to write token to file: %w", err)
 	}

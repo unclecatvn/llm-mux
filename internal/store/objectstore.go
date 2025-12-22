@@ -204,6 +204,7 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 			return "", fmt.Errorf("object store: write temp auth file: %w", errWrite)
 		}
 		if errRename := os.Rename(tmp, path); errRename != nil {
+			_ = os.Remove(tmp) // cleanup temp file on rename failure
 			return "", fmt.Errorf("object store: rename auth file: %w", errRename)
 		}
 	default:

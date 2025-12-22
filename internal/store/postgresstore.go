@@ -234,6 +234,7 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 			return "", fmt.Errorf("postgres store: write temp auth file: %w", errWrite)
 		}
 		if errRename := os.Rename(tmp, path); errRename != nil {
+			_ = os.Remove(tmp) // cleanup temp file on rename failure
 			return "", fmt.Errorf("postgres store: rename auth file: %w", errRename)
 		}
 	default:

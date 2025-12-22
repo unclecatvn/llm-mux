@@ -177,6 +177,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
 		var streamState *CodexStreamState
 		for scanner.Scan() {
+			// Check context cancellation before processing each line
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Bytes()
 
 			if bytes.HasPrefix(line, dataTag) {
@@ -191,16 +198,26 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			chunks, err := TranslateCodexResponseStream(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
 			if err != nil {
 				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: err}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: err}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			for _, chunk := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 	return stream, nil
@@ -481,12 +498,12 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		if userIDResult.Exists() {
 			var hasKey bool
 			key := fmt.Sprintf("%s-%s", req.Model, userIDResult.String())
-			if cache, hasKey = codexCacheMap[key]; !hasKey || cache.Expire.Before(time.Now()) {
+			if cache, hasKey = getCodexCache(key); !hasKey {
 				cache = codexCache{
 					ID:     uuid.New().String(),
 					Expire: time.Now().Add(1 * time.Hour),
 				}
-				codexCacheMap[key] = cache
+				setCodexCache(key, cache)
 			}
 		}
 	} else if from == "openai-response" {

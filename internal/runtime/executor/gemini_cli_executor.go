@@ -293,6 +293,13 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 				streamState.ClaudeState.EstimatedInputTokens = inputTokens
 
 				for scanner.Scan() {
+					// Check context cancellation before processing each line
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+
 					line := scanner.Bytes()
 
 					// Filter usage metadata for all models (aligns with AntigravityExecutor)
@@ -317,16 +324,26 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 					messageID := "chatcmpl-" + attempt
 					translatedChunks, err := TranslateGeminiCLIResponseStream(e.cfg, from, payload, attempt, messageID, streamState)
 					if err != nil {
-						out <- cliproxyexecutor.StreamChunk{Err: err}
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Err: err}:
+						case <-ctx.Done():
+						}
 						return
 					}
 					for _, chunk := range translatedChunks {
-						out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+						select {
+						case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+						case <-ctx.Done():
+							return
+						}
 					}
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					reporter.publishFailure(ctx)
-					out <- cliproxyexecutor.StreamChunk{Err: errScan}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+					case <-ctx.Done():
+					}
 				}
 				return
 			}
@@ -334,7 +351,10 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			data, errRead := io.ReadAll(resp.Body)
 			if errRead != nil {
 				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errRead}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errRead}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			reporter.publish(ctx, parseGeminiCLIUsage(data))
@@ -342,13 +362,22 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			// For non-streaming responses, convert to non-stream and return as single chunk
 			translatedResp, err := TranslateGeminiCLIResponseNonStream(e.cfg, from, data, attempt)
 			if err != nil {
-				out <- cliproxyexecutor.StreamChunk{Err: err}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: err}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			if translatedResp != nil {
-				out <- cliproxyexecutor.StreamChunk{Payload: translatedResp}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: translatedResp}:
+				case <-ctx.Done():
+				}
 			} else {
-				out <- cliproxyexecutor.StreamChunk{Payload: data}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: data}:
+				case <-ctx.Done():
+				}
 			}
 		}(httpResp, append([]byte(nil), payload...), attemptModel, estimatedInputTokens)
 

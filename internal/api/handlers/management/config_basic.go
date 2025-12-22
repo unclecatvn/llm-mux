@@ -149,7 +149,9 @@ func WriteConfig(path string, data []byte) error {
 }
 
 func (h *Handler) PutConfigYAML(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	// Limit request body to 10MB to prevent DoS attacks
+	const maxConfigSize = 10 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxConfigSize))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return

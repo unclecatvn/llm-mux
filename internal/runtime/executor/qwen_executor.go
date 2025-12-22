@@ -155,6 +155,13 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
 		var streamState *OpenAIStreamState
 		for scanner.Scan() {
+			// Check context cancellation before processing each line
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Bytes()
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
 				reporter.publish(ctx, detail)
@@ -162,21 +169,35 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			chunks, err := TranslateOpenAIResponseStream(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
 			if err != nil {
 				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: err}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: err}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			for _, chunk := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 		// Handle [DONE] signal
 		doneChunks, _ := TranslateOpenAIResponseStream(e.cfg, from, []byte("[DONE]"), req.Model, messageID, streamState)
 		for _, chunk := range doneChunks {
-			out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+			case <-ctx.Done():
+				return
+			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 	return stream, nil

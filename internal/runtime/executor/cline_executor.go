@@ -181,6 +181,13 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 		firstChunk := true
 		for scanner.Scan() {
+			// Check context cancellation before processing each line
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			line := scanner.Bytes()
 
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
@@ -211,23 +218,37 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			translatedChunks, errTranslate := TranslateOpenAIResponseStream(e.cfg, from, lineWithPrefix, req.Model, messageID, streamState)
 			if errTranslate != nil {
 				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errTranslate}
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errTranslate}:
+				case <-ctx.Done():
+				}
 				return
 			}
 			if translatedChunks != nil {
 				for _, chunk := range translatedChunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+					case <-ctx.Done():
+						return
+					}
 				}
 				continue
 			}
 
 			// Passthrough if translator returns nil
-			out <- cliproxyexecutor.StreamChunk{Payload: bytes.Clone(payload)}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: bytes.Clone(payload)}:
+			case <-ctx.Done():
+				return
+			}
 		}
 
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case <-ctx.Done():
+			}
 		}
 	}()
 
