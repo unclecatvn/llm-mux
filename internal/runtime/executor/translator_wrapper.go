@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/registry"
 	"github.com/nghyane/llm-mux/internal/translator/from_ir"
 	"github.com/nghyane/llm-mux/internal/translator/ir"
 	"github.com/nghyane/llm-mux/internal/translator/to_ir"
@@ -467,7 +468,62 @@ func convertRequestToIR(from sdktranslator.Format, model string, payload []byte,
 		}
 	}
 
+	// Normalize limits based on model registry (single GetModelInfo call)
+	normalizeIRLimits(irReq.Model, irReq)
+
 	return irReq, nil
+}
+
+// normalizeIRLimits clamps thinking budget and maxTokens to model-specific limits.
+// Uses a single GetModelInfo() call for optimal performance.
+func normalizeIRLimits(model string, req *ir.UnifiedChatRequest) {
+	if model == "" {
+		return
+	}
+
+	info := registry.GetGlobalRegistry().GetModelInfo(model)
+	if info == nil {
+		return // Unknown model, pass through
+	}
+
+	// 1. Normalize thinking budget
+	if req.Thinking != nil && req.Thinking.ThinkingBudget != nil && info.Thinking != nil {
+		budget := int(*req.Thinking.ThinkingBudget)
+
+		// Handle dynamic (-1)
+		if budget == -1 && !info.Thinking.DynamicAllowed {
+			budget = (info.Thinking.Min + info.Thinking.Max) / 2
+		}
+
+		// Handle zero
+		if budget == 0 && !info.Thinking.ZeroAllowed {
+			budget = info.Thinking.Min
+		}
+
+		// Clamp to range
+		if budget > 0 {
+			if budget < info.Thinking.Min {
+				budget = info.Thinking.Min
+			}
+			if budget > info.Thinking.Max {
+				budget = info.Thinking.Max
+			}
+		}
+
+		b := int32(budget)
+		req.Thinking.ThinkingBudget = &b
+	}
+
+	// 2. Clamp maxTokens to model output limit
+	if req.MaxTokens != nil {
+		limit := info.OutputTokenLimit
+		if limit == 0 {
+			limit = info.MaxCompletionTokens // fallback for Claude/OpenAI
+		}
+		if limit > 0 && *req.MaxTokens > limit {
+			*req.MaxTokens = limit
+		}
+	}
 }
 
 // TranslateToGeminiCLI converts request to Gemini CLI format using canonical IR translator.

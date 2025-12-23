@@ -264,10 +264,6 @@ func (e *AIStudioExecutor) translateRequest(req cliproxyexecutor.Request, opts c
 		return nil, translatedPayload{}, fmt.Errorf("translate request: %w", err)
 	}
 	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
-		if budgetOverride != nil {
-			norm := util.NormalizeThinkingBudget(req.Model, *budgetOverride)
-			budgetOverride = &norm
-		}
 		payload = util.ApplyGeminiThinkingConfig(payload, budgetOverride, includeOverride)
 	}
 	payload = util.StripThinkingConfigIfUnsupported(req.Model, payload)
@@ -303,10 +299,6 @@ func (e *AIStudioExecutor) translateRequestWithTokens(req cliproxyexecutor.Reque
 
 	payload := translation.Payload
 	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
-		if budgetOverride != nil {
-			norm := util.NormalizeThinkingBudget(req.Model, *budgetOverride)
-			budgetOverride = &norm
-		}
 		payload = util.ApplyGeminiThinkingConfig(payload, budgetOverride, includeOverride)
 	}
 	payload = util.StripThinkingConfigIfUnsupported(req.Model, payload)

@@ -45,6 +45,7 @@ type GeminiExecutor struct {
 // NewGeminiExecutor creates a new Gemini executor instance.
 // Parameters:
 //   - cfg: The application configuration
+//
 // Returns:
 //   - *GeminiExecutor: A new Gemini executor instance
 func NewGeminiExecutor(cfg *config.Config) *GeminiExecutor { return &GeminiExecutor{cfg: cfg} }
@@ -63,6 +64,7 @@ func (e *GeminiExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) e
 //   - auth: The authentication information
 //   - req: The request to execute
 //   - opts: Additional execution options
+//
 // Returns:
 //   - cliproxyexecutor.Response: The response from the API
 //   - error: An error if the request fails
@@ -79,10 +81,6 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, fmt.Errorf("translate request: %w", err)
 	}
 	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
-		if budgetOverride != nil {
-			norm := util.NormalizeThinkingBudget(req.Model, *budgetOverride)
-			budgetOverride = &norm
-		}
 		body = util.ApplyGeminiThinkingConfig(body, budgetOverride, includeOverride)
 	}
 	body = util.StripThinkingConfigIfUnsupported(req.Model, body)
@@ -162,10 +160,6 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	body := translation.Payload
 	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
-		if budgetOverride != nil {
-			norm := util.NormalizeThinkingBudget(req.Model, *budgetOverride)
-			budgetOverride = &norm
-		}
 		body = util.ApplyGeminiThinkingConfig(body, budgetOverride, includeOverride)
 	}
 	body = util.StripThinkingConfigIfUnsupported(req.Model, body)
@@ -279,10 +273,6 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		return cliproxyexecutor.Response{}, fmt.Errorf("translate request: %w", err)
 	}
 	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
-		if budgetOverride != nil {
-			norm := util.NormalizeThinkingBudget(req.Model, *budgetOverride)
-			budgetOverride = &norm
-		}
 		translatedReq = util.ApplyGeminiThinkingConfig(translatedReq, budgetOverride, includeOverride)
 	}
 	translatedReq = util.StripThinkingConfigIfUnsupported(req.Model, translatedReq)
