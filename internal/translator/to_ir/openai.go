@@ -747,9 +747,16 @@ func parseOpenAIMessage(m gjson.Result) ir.Message {
 	if roleStr == "assistant" {
 		for _, tc := range m.Get("tool_calls").Array() {
 			if tc.Get("type").String() == "function" {
-				msg.ToolCalls = append(msg.ToolCalls, ir.ToolCall{
-					ID: tc.Get("id").String(), Name: tc.Get("function.name").String(), Args: tc.Get("function.arguments").String(),
-				})
+				toolCall := ir.ToolCall{
+					ID:   tc.Get("id").String(),
+					Name: tc.Get("function.name").String(),
+					Args: tc.Get("function.arguments").String(),
+				}
+				// Extract thought_signature from extra_content (Gemini 3 compatibility)
+				if sig := tc.Get("extra_content.google.thought_signature").String(); sig != "" {
+					toolCall.ThoughtSignature = []byte(sig)
+				}
+				msg.ToolCalls = append(msg.ToolCalls, toolCall)
 			}
 		}
 	}

@@ -745,13 +745,28 @@ func ToOpenAIChunkMeta(event ir.UnifiedEvent, model, messageID string, chunkInde
 		choice["delta"] = ir.BuildReasoningDelta(event.Reasoning, string(event.ThoughtSignature))
 	case ir.EventTypeToolCall:
 		if event.ToolCall != nil {
+			tcMap := map[string]any{
+				"index": chunkIndex, "id": event.ToolCall.ID, "type": "function",
+				"function": map[string]any{"name": event.ToolCall.Name, "arguments": event.ToolCall.Args},
+			}
+			// Inject thought_signature for Gemini 3 compatibility
+			// Use event.ThoughtSignature (from event metadata) or fallback to ToolCall.ThoughtSignature
+			ts := event.ThoughtSignature
+			if len(ts) == 0 {
+				ts = event.ToolCall.ThoughtSignature
+			}
+			if len(ts) > 0 {
+				tcMap["extra_content"] = map[string]any{
+					"google": map[string]any{
+						"thought_signature": string(ts),
+					},
+				}
+			}
+
 			choice["delta"] = map[string]any{
 				"role": "assistant",
 				"tool_calls": []any{
-					map[string]any{
-						"index": chunkIndex, "id": event.ToolCall.ID, "type": "function",
-						"function": map[string]any{"name": event.ToolCall.Name, "arguments": event.ToolCall.Args},
-					},
+					tcMap,
 				},
 			}
 		}
@@ -978,10 +993,19 @@ func buildOpenAIAssistantMessage(msg ir.Message) map[string]any {
 		tcs := make([]any, len(msg.ToolCalls))
 		for i := range msg.ToolCalls {
 			tc := &msg.ToolCalls[i]
-			tcs[i] = map[string]any{
+			tcMap := map[string]any{
 				"id": tc.ID, "type": "function",
 				"function": map[string]any{"name": tc.Name, "arguments": tc.Args},
 			}
+			// Inject thought_signature for Gemini 3 compatibility
+			if len(tc.ThoughtSignature) > 0 {
+				tcMap["extra_content"] = map[string]any{
+					"google": map[string]any{
+						"thought_signature": string(tc.ThoughtSignature),
+					},
+				}
+			}
+			tcs[i] = tcMap
 		}
 		result["tool_calls"] = tcs
 	}

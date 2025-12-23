@@ -78,7 +78,8 @@ func (b *ResponseBuilder) DetermineFinishReason() string {
 	return "stop"
 }
 
-// BuildOpenAIToolCalls builds OpenAI-format tool calls array
+// BuildOpenAIToolCalls builds OpenAI-format tool calls array.
+// Includes extra_content.google.thought_signature for Gemini 3 compatibility.
 func (b *ResponseBuilder) BuildOpenAIToolCalls() []any {
 	toolCalls := b.GetToolCalls()
 	if len(toolCalls) == 0 {
@@ -86,7 +87,7 @@ func (b *ResponseBuilder) BuildOpenAIToolCalls() []any {
 	}
 	result := make([]any, len(toolCalls))
 	for i, tc := range toolCalls {
-		result[i] = map[string]any{
+		tcMap := map[string]any{
 			"id":   tc.ID,
 			"type": "function",
 			"function": map[string]any{
@@ -94,6 +95,15 @@ func (b *ResponseBuilder) BuildOpenAIToolCalls() []any {
 				"arguments": tc.Args,
 			},
 		}
+		// Inject thought_signature for Gemini 3 compatibility (OpenAI compat format)
+		if len(tc.ThoughtSignature) > 0 {
+			tcMap["extra_content"] = map[string]any{
+				"google": map[string]any{
+					"thought_signature": string(tc.ThoughtSignature),
+				},
+			}
+		}
+		result[i] = tcMap
 	}
 	return result
 }
@@ -217,12 +227,17 @@ func (b *ResponseBuilder) BuildGeminiContentParts() []any {
 	// Add tool calls as functionCall parts
 	for i := range msg.ToolCalls {
 		tc := &msg.ToolCalls[i]
-		parts = append(parts, map[string]any{
+		fcPart := map[string]any{
 			"functionCall": map[string]any{
 				"name": tc.Name,
 				"args": ParseToolCallArgs(tc.Args),
 			},
-		})
+		}
+		// Include thoughtSignature at part level (required by Gemini 3 for multi-turn)
+		if len(tc.ThoughtSignature) > 0 {
+			fcPart["thoughtSignature"] = string(tc.ThoughtSignature)
+		}
+		parts = append(parts, fcPart)
 	}
 
 	return parts

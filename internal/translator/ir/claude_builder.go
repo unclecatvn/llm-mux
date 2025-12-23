@@ -171,6 +171,17 @@ func ParseClaudeStreamDeltaWithState(parsed gjson.Result, state *ClaudeStreamPar
 			}
 			return []UnifiedEvent{{Type: EventTypeReasoning, Reasoning: thinking, ThoughtSignature: sig}}
 		}
+	case "signature_delta":
+		// Claude Extended Thinking: signature_delta arrives as separate event after thinking_delta
+		// Store in state for subsequent events OR emit as reasoning with just signature
+		if sig := delta.Get("signature").String(); sig != "" {
+			if state != nil {
+				state.CurrentThinkingSignature = sig
+			}
+			// Emit as reasoning event with empty text but signature attached
+			// This ensures signature is preserved in the IR for round-trip
+			return []UnifiedEvent{{Type: EventTypeReasoning, Reasoning: "", ThoughtSignature: []byte(sig)}}
+		}
 	case ClaudeDeltaInputJSON:
 		if state != nil {
 			idx := int(parsed.Get("index").Int())
