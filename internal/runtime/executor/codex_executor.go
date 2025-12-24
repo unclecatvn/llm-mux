@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	codexauth "github.com/nghyane/llm-mux/internal/auth/codex"
 	"github.com/nghyane/llm-mux/internal/config"
 	"github.com/nghyane/llm-mux/internal/misc"
+	"github.com/nghyane/llm-mux/internal/translator/ir"
 	"github.com/nghyane/llm-mux/internal/util"
 	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
@@ -25,8 +25,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
-
-var dataTag = []byte("data:")
 
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
@@ -50,7 +48,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToCodex(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	body, err := TranslateToCodex(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
 		return resp, err
 	}
@@ -128,7 +126,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToCodex(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+	body, err := TranslateToCodex(e.cfg, from, req.Model, req.Payload, true, req.Metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -161,69 +159,61 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		log.Debugf("codex executor: error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		return nil, NewStatusError(httpResp.StatusCode, string(data), nil)
 	}
-	out := make(chan cliproxyexecutor.StreamChunk)
-	stream = out
+
+	// Create stream processor for Codex
 	messageID := "resp-" + req.Model
-	go func() {
-		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("codex executor: close response body error: %v", errClose)
-			}
-		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
-		var streamState *CodexStreamState
-		for scanner.Scan() {
-			// Check context cancellation before processing each line
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+	processor := &codexStreamProcessor{
+		cfg:       e.cfg,
+		from:      from,
+		model:     req.Model,
+		messageID: messageID,
+	}
 
-			line := scanner.Bytes()
+	// Use RunSSEStream for unified streaming with buffer pooling
+	return RunSSEStream(ctx, httpResp.Body, reporter, processor, StreamConfig{
+		ExecutorName:   "codex",
+		SkipEmptyLines: true,
+	}), nil
+}
 
-			if bytes.HasPrefix(line, dataTag) {
-				data := bytes.TrimSpace(line[5:])
-				if gjson.GetBytes(data, "type").String() == "response.completed" {
-					if detail := extractUsageFromOpenAIResponse(data); detail != nil {
-						reporter.publish(ctx, detail)
-					}
-				}
-			}
+// codexStreamProcessor implements StreamProcessor for Codex SSE streams.
+type codexStreamProcessor struct {
+	cfg       *config.Config
+	from      sdktranslator.Format
+	model     string
+	messageID string
+	state     *CodexStreamState
+}
 
-			chunks, err := TranslateCodexResponseStream(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
-			if err != nil {
-				reporter.publishFailure(ctx)
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Err: err}:
-				case <-ctx.Done():
-				}
-				return
-			}
-			for _, chunk := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-				case <-ctx.Done():
-					return
-				}
-			}
+// ProcessLine processes a single SSE line from Codex.
+func (p *codexStreamProcessor) ProcessLine(line []byte) ([][]byte, *ir.Usage, error) {
+	var usage *ir.Usage
+
+	// Extract usage from response.completed events
+	if bytes.HasPrefix(line, dataTag) {
+		data := bytes.TrimSpace(line[len(dataTag):])
+		if gjson.GetBytes(data, "type").String() == "response.completed" {
+			usage = extractUsageFromOpenAIResponse(data)
 		}
-		if errScan := scanner.Err(); errScan != nil {
-			reporter.publishFailure(ctx)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
-		}
-	}()
-	return stream, nil
+	}
+
+	// Translate the line
+	chunks, err := TranslateCodexResponseStream(p.cfg, p.from, line, p.model, p.messageID, p.state)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return chunks, usage, nil
+}
+
+// ProcessDone handles the [DONE] signal (no-op for Codex).
+func (p *codexStreamProcessor) ProcessDone() ([][]byte, error) {
+	return nil, nil
 }
 
 func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	from := opts.SourceFormat
-	body, err := TranslateToCodex(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	body, err := TranslateToCodex(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}

@@ -60,7 +60,7 @@ func (e *ClineExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, nil)
+	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, nil)
 	if err != nil {
 		return resp, err
 	}
@@ -124,7 +124,7 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, nil)
+	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +304,7 @@ func shouldSkipEmptyContentChunk(payload []byte) bool {
 // CountTokens counts tokens in the request for Cline models.
 func (e *ClineExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, nil)
+	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, nil)
 	if err != nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("cline executor: request translation failed: %w", err)
 	}

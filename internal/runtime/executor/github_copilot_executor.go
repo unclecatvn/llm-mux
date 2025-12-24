@@ -66,7 +66,7 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 
 	from := opts.SourceFormat
 	// Translate to OpenAI format (Copilot uses OpenAI-compatible API)
-	body, errTranslate := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, nil)
+	body, errTranslate := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, nil)
 	if errTranslate != nil {
 		return resp, errTranslate
 	}
@@ -126,7 +126,7 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, errTranslate := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, nil)
+	body, errTranslate := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, true, nil)
 	if errTranslate != nil {
 		return nil, errTranslate
 	}

@@ -53,7 +53,7 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
 		return resp, err
 	}
@@ -119,7 +119,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, true, req.Metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 func (e *IFlowExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}

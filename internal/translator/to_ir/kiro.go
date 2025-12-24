@@ -10,10 +10,10 @@ import (
 
 // ParseKiroResponse converts a non-streaming Kiro API response to unified format.
 func ParseKiroResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	parsed, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, nil, err
 	}
-	parsed := gjson.ParseBytes(rawJSON)
 
 	// Try finding assistant response in various paths
 	var resp gjson.Result
@@ -83,10 +83,10 @@ func (s *KiroStreamState) ProcessChunk(rawJSON []byte) ([]ir.UnifiedEvent, error
 	if len(rawJSON) == 0 {
 		return nil, nil
 	}
-	if ir.ValidateJSON(rawJSON) != nil {
+	parsed, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, nil // Ignore invalid chunks in streaming
 	}
-	parsed := gjson.ParseBytes(rawJSON)
 
 	// Check for error in response
 	if errMsg := parsed.Get("error"); errMsg.Exists() {

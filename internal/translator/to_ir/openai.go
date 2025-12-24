@@ -16,11 +16,15 @@ import (
 // Automatically detects format: Chat Completions API uses "messages", Responses API uses "input".
 // This allows the proxy to accept requests from any OpenAI-compatible client (Cursor, Cline, Codex CLI, etc.)
 func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
-		return nil, err
-	}
+	// Parse JSON once and validate by checking existence (avoids double-parsing)
 	root := gjson.ParseBytes(rawJSON)
-	req := &ir.UnifiedChatRequest{Model: root.Get("model").String()}
+	if !root.Exists() || root.Type == gjson.Null {
+		return nil, ir.ErrInvalidJSON
+	}
+	req := &ir.UnifiedChatRequest{
+		Model:    root.Get("model").String(),
+		Metadata: make(map[string]any, 8), // Pre-allocate for common metadata fields
+	}
 
 	if v := root.Get("temperature"); v.Exists() {
 		f := v.Float()
@@ -87,9 +91,6 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 
 			// OpenAI official web search: {"type": "web_search_preview"}
 			if strings.HasPrefix(toolType, "web_search") && !t.Get("function").Exists() {
-				if req.Metadata == nil {
-					req.Metadata = make(map[string]any)
-				}
 				// Map to google_search for Gemini backend
 				gsConfig := map[string]any{}
 				// Preserve search_context_size if provided
@@ -109,9 +110,6 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 
 			// OpenAI code_interpreter tool → maps to Gemini codeExecution
 			if toolType == "code_interpreter" && !t.Get("function").Exists() {
-				if req.Metadata == nil {
-					req.Metadata = make(map[string]any)
-				}
 				ciConfig := map[string]any{}
 				// Preserve container config if provided
 				if container := t.Get("container"); container.Exists() && container.IsObject() {
@@ -126,9 +124,6 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 
 			// OpenAI file_search tool → maps to Gemini fileSearch (if supported)
 			if toolType == "file_search" && !t.Get("function").Exists() {
-				if req.Metadata == nil {
-					req.Metadata = make(map[string]any)
-				}
 				fsConfig := map[string]any{}
 				// Preserve vector_store config if provided
 				if vs := t.Get("vector_store"); vs.Exists() && vs.IsObject() {
@@ -200,32 +195,20 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 				}
 			}
 		} else if rf.Get("type").String() == "json_object" {
-			if req.Metadata == nil {
-				req.Metadata = make(map[string]any)
-			}
 			req.Metadata["ollama_format"] = "json"
 		}
 	}
 
 	if v := root.Get("logit_bias"); v.Exists() && v.IsObject() {
-		if req.Metadata == nil {
-			req.Metadata = make(map[string]any)
-		}
 		var logitBias map[string]any
 		if json.Unmarshal([]byte(v.Raw), &logitBias) == nil {
 			req.Metadata[ir.MetaOpenAILogitBias] = logitBias
 		}
 	}
 	if v := root.Get("seed"); v.Exists() {
-		if req.Metadata == nil {
-			req.Metadata = make(map[string]any)
-		}
 		req.Metadata[ir.MetaOpenAISeed] = int(v.Int())
 	}
 	if v := root.Get("user"); v.Exists() && v.String() != "" {
-		if req.Metadata == nil {
-			req.Metadata = make(map[string]any)
-		}
 		req.Metadata[ir.MetaOpenAIUser] = v.String()
 	}
 
@@ -364,10 +347,10 @@ func parseResponsesContentPart(part gjson.Result) *ir.ContentPart {
 // ParseOpenAIResponse parses non-streaming response FROM OpenAI API into unified format.
 // Auto-detects format: Responses API has "output" array, Chat Completions has "choices" array.
 func ParseOpenAIResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	root, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, nil, err
 	}
-	root := gjson.ParseBytes(rawJSON)
 	usage := ir.ParseOpenAIUsage(root.Get("usage"))
 
 	if output := root.Get("output"); output.Exists() && output.IsArray() {

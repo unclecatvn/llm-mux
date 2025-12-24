@@ -25,11 +25,37 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync"
 
 	"github.com/nghyane/llm-mux/internal/translator/ir"
 	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+)
+
+// =============================================================================
+// Buffer Pools for Performance
+// =============================================================================
+
+const (
+	defaultScannerBufferSize = 64 * 1024 // 64KB initial buffer
+)
+
+// scannerBufferPool pools scanner buffers to reduce allocations in hot path.
+// Each streaming request reuses a 64KB buffer instead of allocating new ones.
+var scannerBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, defaultScannerBufferSize)
+	},
+}
+
+// =============================================================================
+// Pre-allocated Byte Slices (avoid repeated []byte("...") allocations)
+// =============================================================================
+
+var (
+	doneMarker = []byte("[DONE]") // SSE done signal
+	dataTag    = []byte("data:")  // SSE data prefix
 )
 
 // StreamProcessor defines the interface for processing SSE stream lines.
@@ -59,9 +85,6 @@ type StreamPreprocessor func(line []byte) (payload []byte, skip bool)
 type StreamConfig struct {
 	// ExecutorName identifies the executor for logging purposes.
 	ExecutorName string
-
-	// BufferSize is the initial buffer size for the scanner (default: 64*1024).
-	BufferSize int
 
 	// MaxBufferSize is the maximum buffer size for the scanner (default: DefaultStreamBufferSize).
 	MaxBufferSize int
@@ -119,8 +142,8 @@ func DataTagPreprocessor() StreamPreprocessor {
 			return nil, true
 		}
 
-		// Check for done signal
-		if bytes.Equal(trimmed, []byte("[DONE]")) {
+		// Check for done signal (use pre-allocated doneMarker)
+		if bytes.Equal(trimmed, doneMarker) {
 			return trimmed, false // Let the main loop handle [DONE]
 		}
 
@@ -151,15 +174,16 @@ func sendChunk(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk, chu
 }
 
 // isDoneLine checks if a line represents an SSE done signal.
+// Uses pre-allocated byte slices to avoid allocations in hot path.
 func isDoneLine(line []byte) bool {
 	trimmed := bytes.TrimSpace(line)
-	if bytes.Equal(trimmed, []byte("[DONE]")) {
+	if bytes.Equal(trimmed, doneMarker) {
 		return true
 	}
 	// Also check for "data: [DONE]" format
 	if bytes.HasPrefix(trimmed, dataTag) {
 		data := bytes.TrimSpace(trimmed[len(dataTag):])
-		return bytes.Equal(data, []byte("[DONE]"))
+		return bytes.Equal(data, doneMarker)
 	}
 	return false
 }
@@ -193,17 +217,17 @@ func RunSSEStream(
 			}
 		}()
 
-		// Configure scanner with appropriate buffer sizes
+		// Get buffer from pool (reduces allocations in hot path)
+		buf := scannerBufferPool.Get().([]byte)
+		defer scannerBufferPool.Put(buf)
+
+		// Configure scanner with pooled buffer
 		scanner := bufio.NewScanner(body)
-		bufferSize := cfg.BufferSize
-		if bufferSize == 0 {
-			bufferSize = 64 * 1024
-		}
 		maxBufferSize := cfg.MaxBufferSize
 		if maxBufferSize == 0 {
 			maxBufferSize = DefaultStreamBufferSize
 		}
-		scanner.Buffer(make([]byte, bufferSize), maxBufferSize)
+		scanner.Buffer(buf, maxBufferSize)
 
 		for scanner.Scan() {
 			// Check context cancellation before processing each line
@@ -276,11 +300,8 @@ func RunSSEStream(
 					}
 				}
 			} else if cfg.PassthroughOnEmpty {
-				// Send raw line as passthrough
-				cloned := make([]byte, len(line)+1)
-				copy(cloned, line)
-				cloned[len(line)] = '\n'
-				if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: cloned}) {
+				// Send raw line as passthrough (use append to avoid make+copy)
+				if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: append(line, '\n')}) {
 					return
 				}
 			}

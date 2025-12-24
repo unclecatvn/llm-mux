@@ -104,7 +104,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	from := opts.SourceFormat
 	// Use streaming translation to preserve function calling, except for claude.
 	stream := from.String() != "claude"
-	body, err := TranslateToClaude(e.cfg, from, req.Model, bytes.Clone(req.Payload), stream, req.Metadata)
+	body, err := TranslateToClaude(e.cfg, from, req.Model, req.Payload, stream, req.Metadata)
 	if err != nil {
 		return resp, err
 	}
@@ -202,7 +202,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 	from := opts.SourceFormat
-	body, err := TranslateToClaude(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+	body, err := TranslateToClaude(e.cfg, from, req.Model, req.Payload, true, req.Metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +289,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 
 	from := opts.SourceFormat
 	stream := from.String() != "claude"
-	body, err := TranslateToClaude(e.cfg, from, req.Model, bytes.Clone(req.Payload), stream, req.Metadata)
+	body, err := TranslateToClaude(e.cfg, from, req.Model, req.Payload, stream, req.Metadata)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}

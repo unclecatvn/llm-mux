@@ -141,7 +141,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	from := opts.SourceFormat
 
 	// Translate request using canonical translator
-	translated, errTranslate := TranslateToGeminiCLI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	translated, errTranslate := TranslateToGeminiCLI(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if errTranslate != nil {
 		return resp, fmt.Errorf("failed to translate request: %w", errTranslate)
 	}
@@ -264,7 +264,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	from := opts.SourceFormat
 
 	// Translate request and count tokens in one operation (uses shared IR)
-	translation, errTranslate := TranslateToGeminiCLIWithTokens(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+	translation, errTranslate := TranslateToGeminiCLIWithTokens(e.cfg, from, req.Model, req.Payload, true, req.Metadata)
 	if errTranslate != nil {
 		return nil, fmt.Errorf("failed to translate request: %w", errTranslate)
 	}
@@ -860,34 +860,37 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 // =============================================================================
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
-	template, _ := sjson.Set(string(payload), "model", modelName)
-	template, _ = sjson.Set(template, "userAgent", "antigravity")
+	// Use sjson.SetBytes chain to avoid string conversions (performance optimization)
+	result := payload
+	result, _ = sjson.SetBytes(result, "model", modelName)
+	result, _ = sjson.SetBytes(result, "userAgent", "antigravity")
 
 	if projectID != "" {
-		template, _ = sjson.Set(template, "project", projectID)
+		result, _ = sjson.SetBytes(result, "project", projectID)
 	} else {
-		template, _ = sjson.Set(template, "project", generateProjectID())
+		result, _ = sjson.SetBytes(result, "project", generateProjectID())
 	}
-	template, _ = sjson.Set(template, "requestId", generateRequestID())
-	template, _ = sjson.Set(template, "request.sessionId", generateSessionID())
+	result, _ = sjson.SetBytes(result, "requestId", generateRequestID())
+	result, _ = sjson.SetBytes(result, "request.sessionId", generateSessionID())
 
-	template, _ = sjson.Delete(template, "request.safetySettings")
-	template, _ = sjson.Set(template, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	result, _ = sjson.DeleteBytes(result, "request.safetySettings")
+	result, _ = sjson.SetBytes(result, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
 
 	if strings.Contains(modelName, "claude") {
-		gjson.Get(template, "request.tools").ForEach(func(key, tool gjson.Result) bool {
+		gjson.GetBytes(result, "request.tools").ForEach(func(key, tool gjson.Result) bool {
 			tool.Get("functionDeclarations").ForEach(func(funKey, funcDecl gjson.Result) bool {
 				if funcDecl.Get("parametersJsonSchema").Exists() {
-					template, _ = sjson.SetRaw(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters", key.Int(), funKey.Int()), funcDecl.Get("parametersJsonSchema").Raw)
-					template, _ = sjson.Delete(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters.$schema", key.Int(), funKey.Int()))
-					template, _ = sjson.Delete(template, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parametersJsonSchema", key.Int(), funKey.Int()))
+					result, _ = sjson.SetRawBytes(result, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters", key.Int(), funKey.Int()), []byte(funcDecl.Get("parametersJsonSchema").Raw))
+					result, _ = sjson.DeleteBytes(result, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters.$schema", key.Int(), funKey.Int()))
+					result, _ = sjson.DeleteBytes(result, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parametersJsonSchema", key.Int(), funKey.Int()))
 				}
 				return true
 			})
 			return true
 		})
 
-		strJSON := string(template)
+		// Batch delete operations using util.DeleteKey (string conversion unavoidable here)
+		strJSON := string(result)
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.$schema")
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.$ref")
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.$defs")
@@ -897,10 +900,10 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.maxItems")
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.minLength")
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.maxLength")
-		template = strJSON
+		result = []byte(strJSON)
 	}
 
-	return []byte(template)
+	return result
 }
 
 func generateRequestID() string {

@@ -259,7 +259,7 @@ type translatedPayload struct {
 func (e *AIStudioExecutor) translateRequest(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) ([]byte, translatedPayload, error) {
 	from := opts.SourceFormat
 	formatGemini := sdktranslator.FromString("gemini")
-	payload, err := TranslateToGemini(e.cfg, from, req.Model, bytes.Clone(req.Payload), stream, req.Metadata)
+	payload, err := TranslateToGemini(e.cfg, from, req.Model, req.Payload, stream, req.Metadata)
 	if err != nil {
 		return nil, translatedPayload{}, fmt.Errorf("translate request: %w", err)
 	}
@@ -292,7 +292,7 @@ func (e *AIStudioExecutor) translateRequestWithTokens(req cliproxyexecutor.Reque
 	formatGemini := sdktranslator.FromString("gemini")
 
 	// Use the new combined translation + token counting function
-	translation, err := TranslateToGeminiWithTokens(e.cfg, from, req.Model, bytes.Clone(req.Payload), stream, req.Metadata)
+	translation, err := TranslateToGeminiWithTokens(e.cfg, from, req.Model, req.Payload, stream, req.Metadata)
 	if err != nil {
 		return translatedPayload{}, 0, fmt.Errorf("translate request: %w", err)
 	}

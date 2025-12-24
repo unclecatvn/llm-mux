@@ -72,14 +72,14 @@ func (s *OllamaStreamState) DetermineFinishReason() ir.FinishReason {
 // ParseOllamaRequest parses incoming Ollama API request into unified format.
 // Supports both /api/chat and /api/generate endpoints.
 func ParseOllamaRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	root, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, err
 	}
 
-	root := gjson.ParseBytes(rawJSON)
 	req := &ir.UnifiedChatRequest{
 		Model:    root.Get("model").String(),
-		Metadata: make(map[string]any),
+		Metadata: make(map[string]any, 4), // Pre-allocate for common metadata
 	}
 
 	// Parse options (temperature, top_p, etc.)
@@ -131,11 +131,11 @@ func ParseOllamaRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 // ParseOllamaResponse parses non-streaming Ollama API response.
 // Supports both /api/chat and /api/generate response formats.
 func ParseOllamaResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	root, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, nil, err
 	}
 
-	root := gjson.ParseBytes(rawJSON)
 	usage := parseOllamaUsage(root)
 	msg := ir.Message{Role: ir.RoleAssistant}
 
@@ -171,11 +171,12 @@ func ParseOllamaChunkWithState(rawJSON []byte, state *OllamaStreamState) ([]ir.U
 	if len(rawJSON) == 0 {
 		return nil, nil
 	}
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	// Parse and validate in one step
+	root, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, nil // Ignore invalid chunks in streaming
 	}
 
-	root := gjson.ParseBytes(rawJSON)
 	var events []ir.UnifiedEvent
 
 	// Determine content source

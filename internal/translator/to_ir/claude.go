@@ -13,12 +13,12 @@ func ParseClaudeRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 	// URL format fix: remove "format":"uri" which causes issues with some backends
 	rawJSON = bytes.Replace(rawJSON, []byte(`"url":{"type":"string","format":"uri",`), []byte(`"url":{"type":"string",`), -1)
 
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	parsed, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, err
 	}
 
 	req := &ir.UnifiedChatRequest{}
-	parsed := gjson.ParseBytes(rawJSON)
 
 	req.Model = parsed.Get("model").String()
 
@@ -418,11 +418,11 @@ func parseClaudeMessage(m gjson.Result) ir.Message {
 }
 
 func ParseClaudeResponse(rawJSON []byte) ([]ir.Message, *ir.Usage, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	parsed, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, nil, err
 	}
 
-	parsed := gjson.ParseBytes(rawJSON)
 	var usage *ir.Usage
 	if u := parsed.Get("usage"); u.Exists() {
 		usage = ir.ParseClaudeUsage(u)
@@ -450,11 +450,11 @@ func ParseClaudeChunk(rawJSON []byte) ([]ir.UnifiedEvent, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	if ir.ValidateJSON(data) != nil {
+	parsed, err := ir.ParseAndValidateJSON(data)
+	if err != nil {
 		return nil, nil // Ignore invalid chunks in streaming
 	}
 
-	parsed := gjson.ParseBytes(data)
 	switch parsed.Get("type").String() {
 	case "content_block_delta":
 		return ir.ParseClaudeStreamDelta(parsed), nil

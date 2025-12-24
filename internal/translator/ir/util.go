@@ -46,11 +46,23 @@ func ExtractThoughtSignatureString(part gjson.Result) string {
 
 // ValidateJSON checks if the provided bytes are valid JSON.
 // Returns ErrInvalidJSON if validation fails.
+// DEPRECATED: Use ParseAndValidateJSON for better performance (avoids double-parsing).
 func ValidateJSON(rawJSON []byte) error {
 	if !gjson.ValidBytes(rawJSON) {
 		return ErrInvalidJSON
 	}
 	return nil
+}
+
+// ParseAndValidateJSON parses JSON and validates it in one operation.
+// This is more efficient than calling ValidateJSON + gjson.ParseBytes separately.
+// Returns the parsed result and nil error on success, or empty result and ErrInvalidJSON on failure.
+func ParseAndValidateJSON(rawJSON []byte) (gjson.Result, error) {
+	result := gjson.ParseBytes(rawJSON)
+	if !result.Exists() || result.Type == gjson.Null {
+		return gjson.Result{}, ErrInvalidJSON
+	}
+	return result, nil
 }
 
 func UnwrapAntigravityEnvelope(rawJSON []byte) (gjson.Result, bool) {

@@ -51,7 +51,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 
 	// Translate inbound request to OpenAI format
 	from := opts.SourceFormat
-	translated, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), opts.Stream, nil)
+	translated, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, opts.Stream, nil)
 	if err != nil {
 		return resp, err
 	}
@@ -121,7 +121,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		return nil, err
 	}
 	from := opts.SourceFormat
-	translated, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, nil)
+	translated, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	from := opts.SourceFormat
-	translated, err := TranslateToOpenAI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, nil)
+	translated, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, nil)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}

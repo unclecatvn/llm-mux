@@ -186,7 +186,7 @@ func (e *GeminiVertexExecutor) executeWithStrategy(ctx context.Context, auth *cl
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	body, err := TranslateToGemini(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	body, err := TranslateToGemini(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
 		return resp, err
 	}
@@ -272,7 +272,7 @@ func (e *GeminiVertexExecutor) executeStreamWithStrategy(ctx context.Context, au
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	translation, err := TranslateToGeminiWithTokens(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+	translation, err := TranslateToGeminiWithTokens(e.cfg, from, req.Model, req.Payload, true, req.Metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +345,7 @@ func (e *GeminiVertexExecutor) CountTokens(ctx context.Context, auth *cliproxyau
 
 func (e *GeminiVertexExecutor) countTokensWithStrategy(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, strategy VertexAuthStrategy) (cliproxyexecutor.Response, error) {
 	from := opts.SourceFormat
-	translatedReq, err := TranslateToGemini(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	translatedReq, err := TranslateToGemini(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}

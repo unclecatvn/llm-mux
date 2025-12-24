@@ -331,25 +331,27 @@ func StripUsageMetadataFromJSON(rawJSON []byte) ([]byte, bool) {
 		return rawJSON, false
 	}
 
+	// Parse once, reuse result (performance optimization)
+	parsed := gjson.ParseBytes(jsonBytes)
+
 	// Check for finishReason in both aistudio and antigravity formats
-	finishReason := gjson.GetBytes(jsonBytes, "candidates.0.finishReason")
+	finishReason := parsed.Get("candidates.0.finishReason")
 	if !finishReason.Exists() {
-		finishReason = gjson.GetBytes(jsonBytes, "response.candidates.0.finishReason")
+		finishReason = parsed.Get("response.candidates.0.finishReason")
 	}
 	terminalReason := finishReason.Exists() && strings.TrimSpace(finishReason.String()) != ""
-
-	usageMetadata := gjson.GetBytes(jsonBytes, "usageMetadata")
-	if !usageMetadata.Exists() {
-		usageMetadata = gjson.GetBytes(jsonBytes, "response.usageMetadata")
-	}
 
 	// Terminal chunk: keep as-is.
 	if terminalReason {
 		return rawJSON, false
 	}
 
+	// Check if usageMetadata exists
+	hasUsage := parsed.Get("usageMetadata").Exists()
+	hasResponseUsage := parsed.Get("response.usageMetadata").Exists()
+
 	// Nothing to strip
-	if !usageMetadata.Exists() {
+	if !hasUsage && !hasResponseUsage {
 		return rawJSON, false
 	}
 
@@ -357,12 +359,12 @@ func StripUsageMetadataFromJSON(rawJSON []byte) ([]byte, bool) {
 	cleaned := jsonBytes
 	var changed bool
 
-	if gjson.GetBytes(cleaned, "usageMetadata").Exists() {
+	if hasUsage {
 		cleaned, _ = sjson.DeleteBytes(cleaned, "usageMetadata")
 		changed = true
 	}
 
-	if gjson.GetBytes(cleaned, "response.usageMetadata").Exists() {
+	if hasResponseUsage {
 		cleaned, _ = sjson.DeleteBytes(cleaned, "response.usageMetadata")
 		changed = true
 	}
@@ -374,28 +376,28 @@ func hasUsageMetadata(jsonBytes []byte) bool {
 	if len(jsonBytes) == 0 || !gjson.ValidBytes(jsonBytes) {
 		return false
 	}
-	if gjson.GetBytes(jsonBytes, "usageMetadata").Exists() {
-		return true
-	}
-	if gjson.GetBytes(jsonBytes, "response.usageMetadata").Exists() {
-		return true
-	}
-	return false
+	// Parse once, check both paths
+	parsed := gjson.ParseBytes(jsonBytes)
+	return parsed.Get("usageMetadata").Exists() || parsed.Get("response.usageMetadata").Exists()
 }
 
 func isStopChunkWithoutUsage(jsonBytes []byte) bool {
 	if len(jsonBytes) == 0 || !gjson.ValidBytes(jsonBytes) {
 		return false
 	}
-	finishReason := gjson.GetBytes(jsonBytes, "candidates.0.finishReason")
+	// Parse once, reuse for all checks (performance optimization)
+	parsed := gjson.ParseBytes(jsonBytes)
+
+	finishReason := parsed.Get("candidates.0.finishReason")
 	if !finishReason.Exists() {
-		finishReason = gjson.GetBytes(jsonBytes, "response.candidates.0.finishReason")
+		finishReason = parsed.Get("response.candidates.0.finishReason")
 	}
 	trimmed := strings.TrimSpace(finishReason.String())
 	if !finishReason.Exists() || trimmed == "" {
 		return false
 	}
-	return !hasUsageMetadata(jsonBytes)
+	// Check for usageMetadata using parsed result
+	return !parsed.Get("usageMetadata").Exists() && !parsed.Get("response.usageMetadata").Exists()
 }
 
 func jsonPayload(line []byte) []byte {

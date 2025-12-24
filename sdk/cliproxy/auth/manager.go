@@ -566,7 +566,11 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	candidates := make([]*Auth, 0, len(m.auths))
-	modelKey := strings.TrimSpace(model)
+	// Avoid allocation when model doesn't need trimming
+	modelKey := model
+	if len(model) > 0 && (model[0] == ' ' || model[len(model)-1] == ' ') {
+		modelKey = strings.TrimSpace(model)
+	}
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate.Provider != provider || candidate.Disabled {

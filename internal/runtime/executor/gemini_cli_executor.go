@@ -62,7 +62,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	from := opts.SourceFormat
 
 	// Translate request through canonical IR (handles all transformations internally)
-	basePayload, err := TranslateToGeminiCLI(e.cfg, from, req.Model, bytes.Clone(req.Payload), false, req.Metadata)
+	basePayload, err := TranslateToGeminiCLI(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
 		return resp, fmt.Errorf("failed to translate request: %w", err)
 	}
@@ -220,7 +220,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	from := opts.SourceFormat
 
 	// Translate request and count tokens in one operation (uses shared IR)
-	translation, err := TranslateToGeminiCLIWithTokens(e.cfg, from, req.Model, bytes.Clone(req.Payload), true, req.Metadata)
+	translation, err := TranslateToGeminiCLIWithTokens(e.cfg, from, req.Model, req.Payload, true, req.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("failed to translate request: %w", err)
 	}
@@ -353,7 +353,7 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 
 	for idx, attemptModel := range models {
 		// Translate request through canonical IR
-		payload, errTranslate := TranslateToGeminiCLI(e.cfg, from, attemptModel, bytes.Clone(req.Payload), false, req.Metadata)
+		payload, errTranslate := TranslateToGeminiCLI(e.cfg, from, attemptModel, req.Payload, false, req.Metadata)
 		if errTranslate != nil {
 			return cliproxyexecutor.Response{}, fmt.Errorf("failed to translate request: %w", errTranslate)
 		}

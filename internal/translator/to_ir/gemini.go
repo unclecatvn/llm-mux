@@ -19,11 +19,10 @@ var debugToolCalls = os.Getenv("DEBUG_TOOL_CALLS") == "1"
 // ParseGeminiRequest converts a raw Gemini API request JSON into unified format.
 // Handles both native Gemini format and Gemini CLI format (with "request" wrapper).
 func ParseGeminiRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
+	parsed, err := ir.ParseAndValidateJSON(rawJSON)
+	if err != nil {
 		return nil, err
 	}
-
-	parsed := gjson.ParseBytes(rawJSON)
 
 	// Handle Gemini CLI format: {"request": {...}}
 	if requestWrapper := parsed.Get("request"); requestWrapper.Exists() {
@@ -416,8 +415,8 @@ func ParseGeminiResponse(rawJSON []byte) (*ir.UnifiedChatRequest, []ir.Message, 
 // ParseGeminiResponseCandidates parses all candidates from Gemini response.
 // Use this when candidateCount > 1 to get multiple alternative responses.
 func ParseGeminiResponseCandidates(rawJSON []byte, schemaCtx *ir.ToolSchemaContext) ([]ir.CandidateResult, *ir.Usage, *ir.OpenAIMeta, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
-		return nil, nil, nil, err
+	if !gjson.ValidBytes(rawJSON) {
+		return nil, nil, nil, ir.ErrInvalidJSON
 	}
 
 	// Unwrap Antigravity envelope (zero-copy)
@@ -526,8 +525,8 @@ func ParseGeminiResponseMeta(rawJSON []byte) ([]ir.Message, *ir.Usage, *ir.OpenA
 // ParseGeminiResponseMetaWithContext parses a non-streaming Gemini API response with schema context.
 // The schemaCtx parameter allows normalizing tool call parameters based on the original request schema.
 func ParseGeminiResponseMetaWithContext(rawJSON []byte, schemaCtx *ir.ToolSchemaContext) ([]ir.Message, *ir.Usage, *ir.OpenAIMeta, error) {
-	if err := ir.ValidateJSON(rawJSON); err != nil {
-		return nil, nil, nil, err
+	if !gjson.ValidBytes(rawJSON) {
+		return nil, nil, nil, ir.ErrInvalidJSON
 	}
 
 	// Unwrap Antigravity envelope (zero-copy)
@@ -627,8 +626,8 @@ func ParseGeminiChunkWithContext(rawJSON []byte, schemaCtx *ir.ToolSchemaContext
 	if string(rawJSON) == "[DONE]" {
 		return []ir.UnifiedEvent{{Type: ir.EventTypeFinish}}, nil
 	}
-	if err := ir.ValidateJSON(rawJSON); err != nil {
-		return nil, err
+	if !gjson.ValidBytes(rawJSON) {
+		return nil, ir.ErrInvalidJSON
 	}
 
 	// Debug: log raw chunk for analysis
