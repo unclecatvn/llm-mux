@@ -180,16 +180,34 @@ func BuildToolMaps(messages []Message) (map[string]string, map[string]*ToolResul
 	idToName := make(map[string]string)
 	results := make(map[string]*ToolResultPart)
 
+	// For legacy format where ID == Name, we need FIFO matching
+	// Track: name → queue of generated IDs
+	nameToIDs := make(map[string][]string)
+
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleAssistant:
-			for _, tc := range msg.ToolCalls {
+			for i := range msg.ToolCalls {
+				tc := &msg.ToolCalls[i]
+				// If ID equals Name (legacy format), generate unique ID
+				if tc.ID == tc.Name {
+					tc.ID = GenToolCallID()
+				}
 				idToName[tc.ID] = tc.Name
+				nameToIDs[tc.Name] = append(nameToIDs[tc.Name], tc.ID)
 			}
 		case RoleTool, RoleUser:
-			for _, part := range msg.Content {
+			for i := range msg.Content {
+				part := &msg.Content[i]
 				if part.Type == ContentTypeToolResult && part.ToolResult != nil {
-					results[part.ToolResult.ToolCallID] = part.ToolResult
+					tr := part.ToolResult
+					// If ToolCallID looks like a name (legacy format), match to pending call
+					originalID := tr.ToolCallID
+					if queue := nameToIDs[originalID]; len(queue) > 0 {
+						tr.ToolCallID = queue[0]
+						nameToIDs[originalID] = queue[1:] // Pop first (use original key!)
+					}
+					results[tr.ToolCallID] = tr
 				}
 			}
 		}

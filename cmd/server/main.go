@@ -5,12 +5,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -64,6 +68,7 @@ func main() {
 	var copilotLogin bool
 	var initConfig bool
 	var forceInit bool
+	var updateFlag bool
 	var projectID string
 	var vertexImport string
 	var configPath string
@@ -82,6 +87,7 @@ func main() {
 	flag.BoolVar(&copilotLogin, "copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&initConfig, "init", false, "Initialize config and generate management key")
 	flag.BoolVar(&forceInit, "force", false, "Force regenerate management key (use with --init)")
+	flag.BoolVar(&updateFlag, "update", false, "Check for updates and install if available")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
@@ -118,6 +124,11 @@ func main() {
 
 	if initConfig {
 		doInitConfig(configPath, forceInit)
+		return
+	}
+
+	if updateFlag {
+		doUpdate()
 		return
 	}
 
@@ -566,4 +577,142 @@ func doInitConfig(configPath string, force bool) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// doUpdate checks for updates and runs the install script if a newer version is available.
+func doUpdate() {
+	fmt.Println("Checking for updates...")
+
+	// Fetch latest release version from GitHub API
+	latestVersion, err := fetchLatestVersion()
+	if err != nil {
+		log.Fatalf("Failed to check for updates: %v", err)
+	}
+
+	currentVersion := strings.TrimPrefix(buildinfo.Version, "v")
+	latestVersion = strings.TrimPrefix(latestVersion, "v")
+
+	if currentVersion == "dev" || currentVersion == "" {
+		fmt.Println("Running development version, updating to latest release...")
+	} else if compareVersions(currentVersion, latestVersion) >= 0 {
+		fmt.Printf("Already up to date (current: v%s, latest: v%s)\n", currentVersion, latestVersion)
+		return
+	} else {
+		fmt.Printf("Update available: v%s -> v%s\n", currentVersion, latestVersion)
+	}
+
+	fmt.Println("Downloading and installing update...")
+	if err := runInstallScript(); err != nil {
+		log.Fatalf("Failed to install update: %v", err)
+	}
+	fmt.Println("Update complete! Please restart llm-mux.")
+}
+
+// fetchLatestVersion fetches the latest release version from GitHub.
+func fetchLatestVersion() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/repos/nghyane/llm-mux/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", err
+	}
+	return release.TagName, nil
+}
+
+// compareVersions compares two semantic versions.
+// Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+func compareVersions(v1, v2 string) int {
+	parts1 := strings.Split(v1, ".")
+	parts2 := strings.Split(v2, ".")
+
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var n1, n2 int
+		if i < len(parts1) {
+			fmt.Sscanf(parts1[i], "%d", &n1)
+		}
+		if i < len(parts2) {
+			fmt.Sscanf(parts2[i], "%d", &n2)
+		}
+		if n1 < n2 {
+			return -1
+		}
+		if n1 > n2 {
+			return 1
+		}
+	}
+	return 0
+}
+
+// runInstallScript downloads and runs the install script.
+func runInstallScript() error {
+	// Download install script
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://raw.githubusercontent.com/nghyane/llm-mux/main/install.sh", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("failed to download install script: status %d", resp.StatusCode)
+	}
+
+	scriptContent, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// Create temp file for script
+	tmpFile, err := os.CreateTemp("", "llm-mux-install-*.sh")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(scriptContent); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	tmpFile.Close()
+
+	// Make executable and run
+	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("bash", tmpFile.Name())
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

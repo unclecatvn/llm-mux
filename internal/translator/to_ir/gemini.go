@@ -328,7 +328,9 @@ func parseGeminiContent(c gjson.Result) ir.Message {
 			}
 			id := fc.Get("id").String()
 			if id == "" {
-				id = ir.GenToolCallID()
+				// Fallback to name if id not present (legacy format)
+				// This ensures functionCall and functionResponse with same name will match
+				id = name
 			}
 			// Extract thoughtSignature if present (Gemini format)
 			ts := ir.ExtractThoughtSignature(part)
@@ -485,7 +487,11 @@ func parseGeminiCandidate(candidate gjson.Result, schemaCtx *ir.ToolSchemaContex
 				if schemaCtx != nil {
 					args = schemaCtx.NormalizeToolCallArgs(name, args)
 				}
-				msg.ToolCalls = append(msg.ToolCalls, ir.ToolCall{ID: ir.GenToolCallID(), Name: name, Args: args, ThoughtSignature: ts})
+				id := fc.Get("id").String()
+				if id == "" {
+					id = name // Fallback to name for matching with functionResponse
+				}
+				msg.ToolCalls = append(msg.ToolCalls, ir.ToolCall{ID: id, Name: name, Args: args, ThoughtSignature: ts})
 			}
 		} else if ec := part.Get("executableCode"); ec.Exists() {
 			msg.Content = append(msg.Content, ir.ContentPart{
@@ -572,7 +578,11 @@ func ParseGeminiResponseMetaWithContext(rawJSON []byte, schemaCtx *ir.ToolSchema
 				if schemaCtx != nil {
 					args = schemaCtx.NormalizeToolCallArgs(name, args)
 				}
-				msg.ToolCalls = append(msg.ToolCalls, ir.ToolCall{ID: ir.GenToolCallID(), Name: name, Args: args, ThoughtSignature: ts})
+				id := fc.Get("id").String()
+				if id == "" {
+					id = name // Fallback to name for matching with functionResponse
+				}
+				msg.ToolCalls = append(msg.ToolCalls, ir.ToolCall{ID: id, Name: name, Args: args, ThoughtSignature: ts})
 			}
 		} else if ec := part.Get("executableCode"); ec.Exists() {
 			// Gemini code execution: code to run
@@ -679,7 +689,7 @@ func ParseGeminiChunkWithContext(rawJSON []byte, schemaCtx *ir.ToolSchemaContext
 
 					id := fc.Get("id").String()
 					if id == "" {
-						id = ir.GenToolCallID()
+						id = name // Fallback to name for matching with functionResponse
 					}
 					args := fc.Get("args").Raw
 					if args == "" {
