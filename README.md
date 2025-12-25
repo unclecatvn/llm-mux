@@ -150,8 +150,7 @@ llm-mux is a **universal AI API gateway** that translates between different LLM 
 ```mermaid
 flowchart TB
     subgraph Inbound["Inbound Protocols"]
-        OpenAI["OpenAI Chat"]
-        OpenAIResp["OpenAI Responses"]
+        OpenAI["OpenAI"]
         Anthropic["Anthropic"]
         GeminiIn["Gemini"]
         Ollama["Ollama"]
@@ -179,7 +178,6 @@ flowchart TB
     end
 
     OpenAI --> ToIR
-    OpenAIResp --> ToIR
     Anthropic --> ToIR
     GeminiIn --> ToIR
     Ollama --> ToIR
