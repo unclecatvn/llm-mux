@@ -51,3 +51,4 @@ gitstore/
 
 .gemini/*
 .gemini
+server.pid
