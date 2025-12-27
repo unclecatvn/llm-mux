@@ -10,6 +10,7 @@ services:
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}
     container_name: llm-mux
+    command: ["./llm-mux", "--config", "/llm-mux/config.yaml"]
     environment:
       TZ: ${TZ:-UTC}
     ports:
