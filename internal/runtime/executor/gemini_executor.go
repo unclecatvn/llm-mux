@@ -84,10 +84,21 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 	}
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, GeminiGLAPIVersion, req.Model, action)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(req.Model)
+	ub.WriteString(":")
+	ub.WriteString(action)
 	if opts.Alt != "" && action != "countTokens" {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		ub.WriteString("?$alt=")
+		ub.WriteString(opts.Alt)
 	}
+	url := ub.String()
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
@@ -160,12 +171,22 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body = applyPayloadConfig(e.cfg, req.Model, body)
 
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, GeminiGLAPIVersion, req.Model, "streamGenerateContent")
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(req.Model)
+	ub.WriteString(":streamGenerateContent")
 	if opts.Alt == "" {
-		url = url + "?alt=sse"
+		ub.WriteString("?alt=sse")
 	} else {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		ub.WriteString("?$alt=")
+		ub.WriteString(opts.Alt)
 	}
+	url := ub.String()
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
@@ -281,7 +302,16 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
 
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, GeminiGLAPIVersion, req.Model, "countTokens")
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(req.Model)
+	ub.WriteString(":countTokens")
+	url := ub.String()
 
 	requestBody := bytes.NewReader(translatedReq)
 

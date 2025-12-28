@@ -1,6 +1,7 @@
 package util
 
 import (
+	"hash"
 	"hash/fnv"
 	"sync"
 )
@@ -25,6 +26,9 @@ type TokenCache struct {
 }
 
 var (
+	hasherPool = sync.Pool{
+		New: func() any { return fnv.New64a() },
+	}
 	ToolTokenCache        = NewTokenCache()
 	InstructionTokenCache = NewTokenCache()
 	ContentTokenCache     = NewTokenCache()
@@ -41,9 +45,12 @@ func NewTokenCache() *TokenCache {
 }
 
 func hashContent(s string) uint64 {
-	h := fnv.New64a()
+	h := hasherPool.Get().(hash.Hash64)
+	h.Reset()
 	h.Write([]byte(s))
-	return h.Sum64()
+	sum := h.Sum64()
+	hasherPool.Put(h)
+	return sum
 }
 
 func (tc *TokenCache) Get(content string) (int, bool) {

@@ -20,6 +20,7 @@ var TransportConfig = struct {
 	IdleConnTimeout       time.Duration
 	TLSHandshakeTimeout   time.Duration
 	ExpectContinueTimeout time.Duration
+	ResponseHeaderTimeout time.Duration
 	DialTimeout           time.Duration
 	KeepAlive             time.Duration
 }{
@@ -29,6 +30,7 @@ var TransportConfig = struct {
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
+	ResponseHeaderTimeout: 60 * time.Second,
 	DialTimeout:           30 * time.Second,
 	KeepAlive:             30 * time.Second,
 }
@@ -44,70 +46,54 @@ func configureHTTP2(transport *http.Transport) {
 	h2Transport.StrictMaxConcurrentStreams = true
 }
 
-// SharedTransport is the default HTTP transport for direct connections.
-// Used when no proxy is configured and no context RoundTripper is provided.
-var SharedTransport = &http.Transport{
-	MaxIdleConns:          TransportConfig.MaxIdleConns,
-	MaxIdleConnsPerHost:   TransportConfig.MaxIdleConnsPerHost,
-	MaxConnsPerHost:       TransportConfig.MaxConnsPerHost,
-	IdleConnTimeout:       TransportConfig.IdleConnTimeout,
-	TLSHandshakeTimeout:   TransportConfig.TLSHandshakeTimeout,
-	ExpectContinueTimeout: TransportConfig.ExpectContinueTimeout,
-	ResponseHeaderTimeout: 60 * time.Second,
-	ForceAttemptHTTP2:     true,
-	DisableCompression:    false,
-	DialContext: (&net.Dialer{
+// newDialer creates a configured net.Dialer for transport connections.
+func newDialer() *net.Dialer {
+	return &net.Dialer{
 		Timeout:   TransportConfig.DialTimeout,
 		KeepAlive: TransportConfig.KeepAlive,
-	}).DialContext,
-	TLSClientConfig: &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	},
+	}
 }
 
-func init() {
-	configureHTTP2(SharedTransport)
-}
-
-// ProxyTransport creates an HTTP transport with proxy configuration.
-func ProxyTransport(proxyURL *url.URL) *http.Transport {
-	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxyURL),
+// baseTransport creates a base HTTP transport with common configuration.
+func baseTransport() *http.Transport {
+	t := &http.Transport{
 		MaxIdleConns:          TransportConfig.MaxIdleConns,
 		MaxIdleConnsPerHost:   TransportConfig.MaxIdleConnsPerHost,
 		MaxConnsPerHost:       TransportConfig.MaxConnsPerHost,
 		IdleConnTimeout:       TransportConfig.IdleConnTimeout,
 		TLSHandshakeTimeout:   TransportConfig.TLSHandshakeTimeout,
 		ExpectContinueTimeout: TransportConfig.ExpectContinueTimeout,
-		ResponseHeaderTimeout: 60 * time.Second,
+		ResponseHeaderTimeout: TransportConfig.ResponseHeaderTimeout,
 		ForceAttemptHTTP2:     true,
 		DisableCompression:    false,
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
 	}
-	configureHTTP2(transport)
-	return transport
+	configureHTTP2(t)
+	return t
+}
+
+// SharedTransport is the default HTTP transport for direct connections.
+// Used when no proxy is configured and no context RoundTripper is provided.
+var SharedTransport = baseTransport()
+
+func init() {
+	SharedTransport.DialContext = newDialer().DialContext
+}
+
+// ProxyTransport creates an HTTP transport with proxy configuration.
+func ProxyTransport(proxyURL *url.URL) *http.Transport {
+	t := baseTransport()
+	t.Proxy = http.ProxyURL(proxyURL)
+	return t
 }
 
 // SOCKS5Transport creates an HTTP transport with SOCKS5 dialer.
 func SOCKS5Transport(dialFunc func(network, addr string) (net.Conn, error)) *http.Transport {
-	transport := &http.Transport{
-		DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
-			return dialFunc(network, addr)
-		},
-		MaxIdleConns:          TransportConfig.MaxIdleConns,
-		MaxIdleConnsPerHost:   TransportConfig.MaxIdleConnsPerHost,
-		MaxConnsPerHost:       TransportConfig.MaxConnsPerHost,
-		IdleConnTimeout:       TransportConfig.IdleConnTimeout,
-		TLSHandshakeTimeout:   TransportConfig.TLSHandshakeTimeout,
-		ExpectContinueTimeout: TransportConfig.ExpectContinueTimeout,
-		ResponseHeaderTimeout: 60 * time.Second,
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		},
+	t := baseTransport()
+	t.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+		return dialFunc(network, addr)
 	}
-	configureHTTP2(transport)
-	return transport
+	return t
 }

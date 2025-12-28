@@ -324,7 +324,17 @@ func (e *AIStudioExecutor) translateRequestWithTokens(req cliproxyexecutor.Reque
 }
 
 func (e *AIStudioExecutor) buildEndpoint(model, action, alt string) string {
-	base := fmt.Sprintf("%s/%s/models/%s:%s", GeminiDefaultBaseURL, GeminiGLAPIVersion, model, action)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(GeminiDefaultBaseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(model)
+	ub.WriteString(":")
+	ub.WriteString(action)
+	base := ub.String()
 	if action == "streamGenerateContent" {
 		if alt == "" {
 			return base + "?alt=sse"
