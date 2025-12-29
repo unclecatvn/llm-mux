@@ -2,16 +2,62 @@ package cliproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 )
+
+// Optimized transport settings for API gateway workloads.
+// These are duplicated from internal/runtime/executor/transport.go
+// because SDK packages cannot import internal packages.
+const (
+	maxIdleConns          = 1000
+	maxIdleConnsPerHost   = 100 // Default is 2, too low for API gateways
+	maxConnsPerHost       = 200
+	idleConnTimeout       = 90 * time.Second
+	tlsHandshakeTimeout   = 10 * time.Second
+	expectContinueTimeout = 1 * time.Second
+)
+
+// proxyTransport creates a transport with HTTP/HTTPS proxy.
+func proxyTransport(proxyURL *url.URL) *http.Transport {
+	return &http.Transport{
+		Proxy:                 http.ProxyURL(proxyURL),
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		MaxConnsPerHost:       maxConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ExpectContinueTimeout: expectContinueTimeout,
+		ForceAttemptHTTP2:     true,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+}
+
+// socks5Transport creates a transport with SOCKS5 dialer.
+func socks5Transport(dialFunc func(network, addr string) (net.Conn, error)) *http.Transport {
+	return &http.Transport{
+		DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
+			return dialFunc(network, addr)
+		},
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		MaxConnsPerHost:       maxConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ExpectContinueTimeout: expectContinueTimeout,
+		ForceAttemptHTTP2:     true,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+}
 
 // defaultRoundTripperProvider returns a per-auth HTTP RoundTripper based on
 // the Auth.ProxyURL value. It caches transports per proxy URL string.
@@ -46,27 +92,22 @@ func (p *defaultRoundTripperProvider) RoundTripperFor(auth *coreauth.Auth) http.
 		return nil
 	}
 	var transport *http.Transport
-	// Handle different proxy schemes.
 	switch proxyURL.Scheme {
 	case "socks5":
-		// Configure SOCKS5 proxy with optional authentication.
-		username := proxyURL.User.Username()
-		password, _ := proxyURL.User.Password()
-		proxyAuth := &proxy.Auth{User: username, Password: password}
+		var proxyAuth *proxy.Auth
+		if proxyURL.User != nil {
+			username := proxyURL.User.Username()
+			password, _ := proxyURL.User.Password()
+			proxyAuth = &proxy.Auth{User: username, Password: password}
+		}
 		dialer, errSOCKS5 := proxy.SOCKS5("tcp", proxyURL.Host, proxyAuth, proxy.Direct)
 		if errSOCKS5 != nil {
 			log.Errorf("create SOCKS5 dialer failed: %v", errSOCKS5)
 			return nil
 		}
-		// Set up a custom transport using the SOCKS5 dialer.
-		transport = &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
-			},
-		}
+		transport = socks5Transport(dialer.Dial)
 	case "http", "https":
-		// Configure HTTP or HTTPS proxy.
-		transport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		transport = proxyTransport(proxyURL)
 	default:
 		log.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
 		return nil

@@ -1,9 +1,13 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
+	"github.com/nghyane/llm-mux/internal/config"
+	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
+	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tiktoken-go/tokenizer"
 )
@@ -233,4 +237,52 @@ func addIfNotEmpty(segments *[]string, value string) {
 	if trimmed := strings.TrimSpace(value); trimmed != "" {
 		*segments = append(*segments, trimmed)
 	}
+}
+
+// CountTokensForOpenAIProvider provides common token counting for OpenAI-compatible providers.
+// It handles translation, model extraction, tokenizer initialization, and response formatting.
+//
+// Parameters:
+//   - ctx: Context for cancellation and translation
+//   - cfg: Config for translation settings
+//   - executorName: Name for error messages (e.g., "qwen executor")
+//   - from: Source format for translation
+//   - model: Model name to use for tokenizer (fallback if not in body)
+//   - payload: Original request payload
+//   - metadata: Optional metadata for translation (can be nil)
+//
+// Returns a Response with translated token count or an error.
+func CountTokensForOpenAIProvider(
+	ctx context.Context,
+	cfg *config.Config,
+	executorName string,
+	from sdktranslator.Format,
+	model string,
+	payload []byte,
+	metadata map[string]any,
+) (cliproxyexecutor.Response, error) {
+	body, err := TranslateToOpenAI(cfg, from, model, payload, false, metadata)
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
+
+	// Extract model from body if available, fallback to provided model
+	modelName := gjson.GetBytes(body, "model").String()
+	if strings.TrimSpace(modelName) == "" {
+		modelName = model
+	}
+
+	enc, err := tokenizerForModel(modelName)
+	if err != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("%s: tokenizer init failed: %w", executorName, err)
+	}
+
+	count, err := countOpenAIChatTokens(enc, body)
+	if err != nil {
+		return cliproxyexecutor.Response{}, fmt.Errorf("%s: token counting failed: %w", executorName, err)
+	}
+
+	usageJSON := buildOpenAIUsageJSON(count)
+	translated := sdktranslator.TranslateTokenCount(ctx, formatOpenAI, from, count, usageJSON)
+	return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
 }

@@ -24,11 +24,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"sync"
 
+	"github.com/nghyane/llm-mux/internal/config"
 	"github.com/nghyane/llm-mux/internal/translator/ir"
 	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
+	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -37,15 +40,11 @@ import (
 // Buffer Pools for Performance
 // =============================================================================
 
-const (
-	defaultScannerBufferSize = 64 * 1024 // 64KB initial buffer
-)
-
 // scannerBufferPool pools scanner buffers to reduce allocations in hot path.
 // Each streaming request reuses a 64KB buffer instead of allocating new ones.
 var scannerBufferPool = sync.Pool{
 	New: func() any {
-		return make([]byte, defaultScannerBufferSize)
+		return make([]byte, DefaultScannerBufferSize)
 	},
 }
 
@@ -112,7 +111,9 @@ type StreamConfig struct {
 
 // GeminiPreprocessor creates a preprocessor for Gemini/Antigravity streams.
 // It applies FilterSSEUsageMetadata, extracts JSON payload, and validates JSON.
+// Also skips duplicate finish-only chunks (Claude Vertex sends 2 finish SSE lines).
 func GeminiPreprocessor() StreamPreprocessor {
+	var finishSeen bool
 	return func(line []byte) (payload []byte, skip bool) {
 		// Filter usage metadata for non-terminal chunks
 		filtered := FilterSSEUsageMetadata(line)
@@ -127,6 +128,32 @@ func GeminiPreprocessor() StreamPreprocessor {
 		if !gjson.ValidBytes(payload) {
 			log.Debugf("gemini preprocessor: skipping malformed SSE payload")
 			return nil, true
+		}
+
+		// Skip duplicate finish-only chunks (Claude Vertex sends 2 finish SSE lines)
+		// Check if this chunk has finishReason and empty/no content parts
+		parsed := gjson.ParseBytes(payload)
+		candidate := parsed.Get("candidates.0")
+		if !candidate.Exists() {
+			candidate = parsed.Get("response.candidates.0")
+		}
+
+		if candidate.Get("finishReason").Exists() {
+			parts := candidate.Get("content.parts").Array()
+			hasContent := false
+			for _, p := range parts {
+				if p.Get("text").String() != "" || p.Get("functionCall").Exists() {
+					hasContent = true
+					break
+				}
+			}
+			if !hasContent {
+				// This is a finish-only chunk
+				if finishSeen {
+					return nil, true // Skip duplicate
+				}
+				finishSeen = true
+			}
 		}
 
 		return payload, false
@@ -207,7 +234,7 @@ func RunSSEStream(
 	processor StreamProcessor,
 	cfg StreamConfig,
 ) <-chan cliproxyexecutor.StreamChunk {
-	out := make(chan cliproxyexecutor.StreamChunk)
+	out := make(chan cliproxyexecutor.StreamChunk, 8)
 
 	go func() {
 		defer close(out)
@@ -283,7 +310,8 @@ func RunSSEStream(
 				if reporter != nil {
 					reporter.publishFailure(ctx)
 				}
-				sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: err})
+				errorJSON := fmt.Sprintf(`data: {"error": {"message": "%s", "type": "server_error"}}\n\n`, err.Error())
+				sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(errorJSON)})
 				return
 			}
 
@@ -295,13 +323,32 @@ func RunSSEStream(
 			// Send chunks to output
 			if len(chunks) > 0 {
 				for _, chunk := range chunks {
-					if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: chunk}) {
+					if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(chunk)}) {
 						return
 					}
 				}
 			} else if cfg.PassthroughOnEmpty {
-				// Send raw line as passthrough (use append to avoid make+copy)
-				if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: append(line, '\n')}) {
+				// Send raw payload as passthrough (clone to avoid scanner buffer reuse)
+				if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: bytes.Clone(payload)}) {
+					return
+				}
+			}
+		}
+
+		// Flush any pending chunks when stream ends normally (EOF)
+		// Claude Vertex doesn't send [DONE] marker - it just closes the stream
+		// This ensures the last held chunk from delay-1 strategy is emitted
+		if processor != nil {
+			doneChunks, doneErr := processor.ProcessDone()
+			if doneErr != nil {
+				if reporter != nil {
+					reporter.publishFailure(ctx)
+				}
+				sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: doneErr})
+				return
+			}
+			for _, chunk := range doneChunks {
+				if !sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: chunk}) {
 					return
 				}
 			}
@@ -312,7 +359,8 @@ func RunSSEStream(
 			if reporter != nil {
 				reporter.publishFailure(ctx)
 			}
-			sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errScan})
+			errorJSON := fmt.Sprintf(`data: {"error": {"message": "%s", "type": "server_error"}}\n\n`, errScan.Error())
+			sendChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: []byte(errorJSON)})
 			return
 		}
 
@@ -346,4 +394,59 @@ func (p *SimpleStreamProcessor) ProcessDone() ([][]byte, error) {
 // NewSimpleStreamProcessor creates a SimpleStreamProcessor from a processing function.
 func NewSimpleStreamProcessor(fn func(line []byte) (chunks [][]byte, usage *ir.Usage, err error)) *SimpleStreamProcessor {
 	return &SimpleStreamProcessor{ProcessFunc: fn}
+}
+
+// =============================================================================
+// OpenAI-Compatible Stream Processor
+// =============================================================================
+
+// OpenAIStreamProcessor implements StreamProcessor for OpenAI-compatible APIs.
+// It uses TranslateOpenAIResponseStreamWithUsage for translation and supports
+// optional preprocessing for provider-specific transformations.
+type OpenAIStreamProcessor struct {
+	cfg         *config.Config
+	from        sdktranslator.Format
+	model       string
+	messageID   string
+	streamState *OpenAIStreamState
+	// Preprocess is an optional function to transform payload before translation.
+	// It receives the raw line and firstChunk flag, returns modified payload.
+	// If it returns nil, the line is skipped.
+	Preprocess func(line []byte, firstChunk bool) []byte
+	firstChunk bool
+}
+
+// NewOpenAIStreamProcessor creates a new OpenAI-compatible stream processor.
+func NewOpenAIStreamProcessor(cfg *config.Config, from sdktranslator.Format, model, messageID string) *OpenAIStreamProcessor {
+	return &OpenAIStreamProcessor{
+		cfg:         cfg,
+		from:        from,
+		model:       model,
+		messageID:   messageID,
+		streamState: &OpenAIStreamState{},
+		firstChunk:  true,
+	}
+}
+
+func (p *OpenAIStreamProcessor) ProcessLine(line []byte) ([][]byte, *ir.Usage, error) {
+	payload := line
+	isFirst := p.firstChunk
+	if p.Preprocess != nil {
+		payload = p.Preprocess(line, isFirst)
+		if payload == nil {
+			return nil, nil, nil
+		}
+	}
+	p.firstChunk = false // Always update after processing a line
+
+	result, err := TranslateOpenAIResponseStreamWithUsage(p.cfg, p.from, bytes.Clone(payload), p.model, p.messageID, p.streamState)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result.Chunks, result.Usage, nil
+}
+
+func (p *OpenAIStreamProcessor) ProcessDone() ([][]byte, error) {
+	result, _ := TranslateOpenAIResponseStreamWithUsage(p.cfg, p.from, []byte("[DONE]"), p.model, p.messageID, p.streamState)
+	return result.Chunks, nil
 }

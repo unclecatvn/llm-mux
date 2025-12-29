@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -128,7 +129,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
 
-	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(64)
+	ub.WriteString(baseURL)
+	ub.WriteString("/v1/messages?beta=true")
+	url := ub.String()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
@@ -138,6 +144,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return resp, NewTimeoutError("request timed out")
+		}
 		return resp, err
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
@@ -224,7 +233,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
 
-	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(64)
+	ub.WriteString(baseURL)
+	ub.WriteString("/v1/messages?beta=true")
+	url := ub.String()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -234,6 +248,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, NewTimeoutError("request timed out")
+		}
 		return nil, err
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
@@ -307,7 +324,12 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
 
-	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(64)
+	ub.WriteString(baseURL)
+	ub.WriteString("/v1/messages/count_tokens?beta=true")
+	url := ub.String()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
@@ -317,6 +339,9 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return cliproxyexecutor.Response{}, NewTimeoutError("request timed out")
+		}
 		return cliproxyexecutor.Response{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

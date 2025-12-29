@@ -4,6 +4,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -88,6 +89,10 @@ func FetchCloudCodeModels(ctx context.Context, httpClient *http.Client, cfg Clou
 
 		httpResp, err := httpClient.Do(httpReq)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				log.Errorf("%s: request timed out", cfg.ProviderType)
+				return nil
+			}
 			action, _ := handler.HandleError(ctx, err, hasNext)
 			if action == RetryActionContinueNext {
 				log.Debugf("%s: models request error on %s, retrying with fallback", cfg.ProviderType, baseURL)
@@ -200,6 +205,10 @@ func FetchGLAPIModels(ctx context.Context, httpClient *http.Client, cfg GLAPIFet
 
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Errorf("%s: request timed out", cfg.ProviderType)
+			return nil
+		}
 		log.Errorf("%s: models request error: %v", cfg.ProviderType, err)
 		return nil
 	}

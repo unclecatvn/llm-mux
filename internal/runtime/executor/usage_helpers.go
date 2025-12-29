@@ -239,11 +239,34 @@ func extractUsageFromGeminiResponse(data []byte) *ir.Usage {
 	return usage
 }
 
-var stopChunkWithoutUsage sync.Map
+var (
+	stopChunkWithoutUsage = make(map[string]time.Time)
+	stopChunkMutex        sync.RWMutex
+	cleanupOnce           sync.Once
+)
+
+func initCleanup() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			stopChunkMutex.Lock()
+			for traceID, expiry := range stopChunkWithoutUsage {
+				if now.After(expiry) {
+					delete(stopChunkWithoutUsage, traceID)
+				}
+			}
+			stopChunkMutex.Unlock()
+		}
+	}()
+}
 
 func rememberStopWithoutUsage(traceID string) {
-	stopChunkWithoutUsage.Store(traceID, struct{}{})
-	time.AfterFunc(10*time.Minute, func() { stopChunkWithoutUsage.Delete(traceID) })
+	cleanupOnce.Do(initCleanup)
+	stopChunkMutex.Lock()
+	stopChunkWithoutUsage[traceID] = time.Now().Add(10 * time.Minute)
+	stopChunkMutex.Unlock()
 }
 
 // FilterSSEUsageMetadata removes usageMetadata from SSE events that are not
@@ -284,10 +307,17 @@ func FilterSSEUsageMetadata(payload []byte) []byte {
 			continue
 		}
 		if traceID != "" {
-			if _, ok := stopChunkWithoutUsage.Load(traceID); ok && hasUsageMetadata(rawJSON) {
-				stopChunkWithoutUsage.Delete(traceID)
+			stopChunkMutex.RLock()
+			expiry, ok := stopChunkWithoutUsage[traceID]
+			if ok && time.Now().Before(expiry) && hasUsageMetadata(rawJSON) {
+				stopChunkMutex.RUnlock()
+				stopChunkMutex.Lock()
+				delete(stopChunkWithoutUsage, traceID)
+				stopChunkMutex.Unlock()
 				modified = true
 				continue
+			} else {
+				stopChunkMutex.RUnlock()
 			}
 		}
 

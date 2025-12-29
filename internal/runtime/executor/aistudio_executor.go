@@ -3,8 +3,8 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/nghyane/llm-mux/internal/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -137,7 +137,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		}
 		return nil, NewStatusError(firstEvent.Status, body.String(), nil)
 	}
-	out := make(chan cliproxyexecutor.StreamChunk)
+	out := make(chan cliproxyexecutor.StreamChunk, 8)
 	stream = out
 
 	go func(first wsrelay.StreamEvent, inputTokens int64) {
@@ -324,7 +324,17 @@ func (e *AIStudioExecutor) translateRequestWithTokens(req cliproxyexecutor.Reque
 }
 
 func (e *AIStudioExecutor) buildEndpoint(model, action, alt string) string {
-	base := fmt.Sprintf("%s/%s/models/%s:%s", GeminiDefaultBaseURL, glAPIVersion, model, action)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(GeminiDefaultBaseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(model)
+	ub.WriteString(":")
+	ub.WriteString(action)
+	base := ub.String()
 	if action == "streamGenerateContent" {
 		if alt == "" {
 			return base + "?alt=sse"

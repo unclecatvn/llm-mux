@@ -3,8 +3,9 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/nghyane/llm-mux/internal/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -92,12 +93,15 @@ func (p *antigravityStreamProcessor) ProcessLine(payload []byte) ([][]byte, *ir.
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to translate chunk: %w", err)
 	}
+	if result == nil {
+		return nil, nil, nil
+	}
 	return result.Chunks, result.Usage, nil
 }
 
-// ProcessDone implements StreamProcessor.ProcessDone (no-op for Antigravity).
+// ProcessDone implements StreamProcessor.ProcessDone - flushes any pending Gemini chunk.
 func (p *antigravityStreamProcessor) ProcessDone() ([][]byte, error) {
-	return nil, nil
+	return flushPendingGeminiChunk(p.state), nil
 }
 
 // =============================================================================
@@ -134,6 +138,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	var lastErr error
 
 	for idx := 0; idx < len(baseURLs); idx++ {
+		handler.Reset()
 		baseURL := baseURLs[idx]
 		hasNext := idx+1 < len(baseURLs)
 
@@ -157,6 +162,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 				idx--
 				continue
 			default:
+				if errors.Is(errDo, context.DeadlineExceeded) {
+					return resp, NewTimeoutError("request timed out")
+				}
 				return resp, errDo
 			}
 		}
@@ -259,6 +267,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	var lastErr error
 
 	for idx := 0; idx < len(baseURLs); idx++ {
+		handler.Reset()
 		baseURL := baseURLs[idx]
 		hasNext := idx+1 < len(baseURLs)
 
@@ -282,6 +291,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				idx--
 				continue
 			default:
+				if errors.Is(errDo, context.DeadlineExceeded) {
+					return nil, NewTimeoutError("request timed out")
+				}
 				return nil, errDo
 			}
 		}
@@ -476,6 +488,9 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
+		if errors.Is(errDo, context.DeadlineExceeded) {
+			return auth, NewTimeoutError("request timed out")
+		}
 		return auth, errDo
 	}
 	defer func() {
@@ -546,19 +561,21 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	if stream {
 		path = antigravityStreamPath
 	}
-	var requestURL strings.Builder
-	requestURL.WriteString(base)
-	requestURL.WriteString(path)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128) // estimate URL length
+	ub.WriteString(base)
+	ub.WriteString(path)
 	if stream {
 		if alt != "" {
-			requestURL.WriteString("?$alt=")
-			requestURL.WriteString(url.QueryEscape(alt))
+			ub.WriteString("?$alt=")
+			ub.WriteString(url.QueryEscape(alt))
 		} else {
-			requestURL.WriteString("?alt=sse")
+			ub.WriteString("?alt=sse")
 		}
 	} else if alt != "" {
-		requestURL.WriteString("?$alt=")
-		requestURL.WriteString(url.QueryEscape(alt))
+		ub.WriteString("?$alt=")
+		ub.WriteString(url.QueryEscape(alt))
 	}
 
 	// Extract project_id from auth metadata if available
@@ -592,7 +609,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		payload = []byte(strJSON)
 	}
 
-	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(payload))
+	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, ub.String(), bytes.NewReader(payload))
 	if errReq != nil {
 		return nil, errReq
 	}
@@ -742,36 +759,74 @@ func resolveCustomAntigravityBaseURL(auth *cliproxyauth.Auth) string {
 // =============================================================================
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
-	// Use sjson.SetBytes chain to avoid string conversions (performance optimization)
-	result := payload
-	result, _ = sjson.SetBytes(result, "model", modelName)
-	result, _ = sjson.SetBytes(result, "userAgent", "antigravity")
-
-	if projectID != "" {
-		result, _ = sjson.SetBytes(result, "project", projectID)
-	} else {
-		result, _ = sjson.SetBytes(result, "project", generateProjectID())
+	var data map[string]interface{}
+	if err := json.Unmarshal(payload, &data); err != nil {
+		// If unmarshal fails, return original payload
+		return payload
 	}
-	result, _ = sjson.SetBytes(result, "requestId", generateRequestID())
-	result, _ = sjson.SetBytes(result, "request.sessionId", generateSessionID())
 
-	result, _ = sjson.DeleteBytes(result, "request.safetySettings")
-	result, _ = sjson.SetBytes(result, "request.toolConfig.functionCallingConfig.mode", "VALIDATED")
+	// Set top-level fields
+	data["model"] = modelName
+	data["userAgent"] = "antigravity"
+	if projectID != "" {
+		data["project"] = projectID
+	} else {
+		data["project"] = generateProjectID()
+	}
+	data["requestId"] = generateRequestID()
+
+	// Modify request object
+	if req, ok := data["request"].(map[string]interface{}); ok {
+		req["sessionId"] = generateSessionID()
+		delete(req, "safetySettings")
+
+		// Set toolConfig
+		if toolConfig, ok := req["toolConfig"].(map[string]interface{}); ok {
+			if funcCallingConfig, ok := toolConfig["functionCallingConfig"].(map[string]interface{}); ok {
+				funcCallingConfig["mode"] = "VALIDATED"
+			} else {
+				toolConfig["functionCallingConfig"] = map[string]interface{}{"mode": "VALIDATED"}
+			}
+		} else {
+			req["toolConfig"] = map[string]interface{}{
+				"functionCallingConfig": map[string]interface{}{"mode": "VALIDATED"},
+			}
+		}
+
+		if strings.Contains(modelName, "claude") {
+			// Handle tools modification
+			if tools, ok := req["tools"].([]interface{}); ok {
+				for _, tool := range tools {
+					if toolMap, ok := tool.(map[string]interface{}); ok {
+						if funcDecls, ok := toolMap["functionDeclarations"].([]interface{}); ok {
+							for _, funcDecl := range funcDecls {
+								if funcDeclMap, ok := funcDecl.(map[string]interface{}); ok {
+									if paramsSchema, exists := funcDeclMap["parametersJsonSchema"]; exists {
+										funcDeclMap["parameters"] = paramsSchema
+										delete(funcDeclMap, "parametersJsonSchema")
+										// Delete $schema from parameters if it exists
+										if params, ok := funcDeclMap["parameters"].(map[string]interface{}); ok {
+											delete(params, "$schema")
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Marshal the modified data
+	result, err := json.Marshal(data)
+	if err != nil {
+		// If marshal fails, return original payload
+		return payload
+	}
 
 	if strings.Contains(modelName, "claude") {
-		gjson.GetBytes(result, "request.tools").ForEach(func(key, tool gjson.Result) bool {
-			tool.Get("functionDeclarations").ForEach(func(funKey, funcDecl gjson.Result) bool {
-				if funcDecl.Get("parametersJsonSchema").Exists() {
-					result, _ = sjson.SetRawBytes(result, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters", key.Int(), funKey.Int()), []byte(funcDecl.Get("parametersJsonSchema").Raw))
-					result, _ = sjson.DeleteBytes(result, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parameters.$schema", key.Int(), funKey.Int()))
-					result, _ = sjson.DeleteBytes(result, fmt.Sprintf("request.tools.%d.functionDeclarations.%d.parametersJsonSchema", key.Int(), funKey.Int()))
-				}
-				return true
-			})
-			return true
-		})
-
-		// Batch delete operations using util.DeleteKey (string conversion unavoidable here)
+		// Batch delete operations using util.DeleteKey
 		strJSON := string(result)
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.$schema")
 		strJSON = util.DeleteKey(strJSON, "request.tools.#.functionDeclarations.#.parameters.$ref")

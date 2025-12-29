@@ -3,8 +3,9 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/nghyane/llm-mux/internal/json"
 	"io"
 	"net/http"
 	"strings"
@@ -101,7 +102,15 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		}
 		updateGeminiCLITokenMetadata(auth, baseTokenData, tok)
 
-		url := fmt.Sprintf("%s/%s:%s", codeAssistEndpoint, codeAssistVersion, action)
+		ub := GetURLBuilder()
+		defer ub.Release()
+		ub.Grow(100)
+		ub.WriteString(codeAssistEndpoint)
+		ub.WriteString("/")
+		ub.WriteString(codeAssistVersion)
+		ub.WriteString(":")
+		ub.WriteString(action)
+		url := ub.String()
 		if opts.Alt != "" && action != "countTokens" {
 			url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 		}
@@ -118,6 +127,9 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 
 		httpResp, errDo := httpClient.Do(reqHTTP)
 		if errDo != nil {
+			if errors.Is(errDo, context.DeadlineExceeded) {
+				return resp, NewTimeoutError("request timed out")
+			}
 			err = errDo
 			return resp, err
 		}
@@ -201,9 +213,9 @@ func (p *geminiCLIStreamProcessor) ProcessLine(payload []byte) ([][]byte, *ir.Us
 	return result.Chunks, result.Usage, nil
 }
 
-// ProcessDone implements StreamProcessor.ProcessDone (no-op for Gemini CLI).
+// ProcessDone implements StreamProcessor.ProcessDone - flushes any pending Gemini chunk.
 func (p *geminiCLIStreamProcessor) ProcessDone() ([][]byte, error) {
-	return nil, nil
+	return flushPendingGeminiChunk(p.state), nil
 }
 
 // =============================================================================
@@ -249,7 +261,15 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		}
 		updateGeminiCLITokenMetadata(auth, baseTokenData, tok)
 
-		url := fmt.Sprintf("%s/%s:%s", codeAssistEndpoint, codeAssistVersion, "streamGenerateContent")
+		ub := GetURLBuilder()
+		defer ub.Release()
+		ub.Grow(100)
+		ub.WriteString(codeAssistEndpoint)
+		ub.WriteString("/")
+		ub.WriteString(codeAssistVersion)
+		ub.WriteString(":")
+		ub.WriteString("streamGenerateContent")
+		url := ub.String()
 		if opts.Alt == "" {
 			url = url + "?alt=sse"
 		} else {
@@ -268,6 +288,9 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 
 		httpResp, errDo := httpClient.Do(reqHTTP)
 		if errDo != nil {
+			if errors.Is(errDo, context.DeadlineExceeded) {
+				return nil, NewTimeoutError("request timed out")
+			}
 			err = errDo
 			return nil, err
 		}
@@ -370,7 +393,15 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 		}
 		updateGeminiCLITokenMetadata(auth, baseTokenData, tok)
 
-		url := fmt.Sprintf("%s/%s:%s", codeAssistEndpoint, codeAssistVersion, "countTokens")
+		ub := GetURLBuilder()
+		defer ub.Release()
+		ub.Grow(100)
+		ub.WriteString(codeAssistEndpoint)
+		ub.WriteString("/")
+		ub.WriteString(codeAssistVersion)
+		ub.WriteString(":")
+		ub.WriteString("countTokens")
+		url := ub.String()
 		if opts.Alt != "" {
 			url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 		}
@@ -386,6 +417,9 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 
 		resp, errDo := httpClient.Do(reqHTTP)
 		if errDo != nil {
+			if errors.Is(errDo, context.DeadlineExceeded) {
+				return cliproxyexecutor.Response{}, NewTimeoutError("request timed out")
+			}
 			return cliproxyexecutor.Response{}, errDo
 		}
 		data, errRead := io.ReadAll(resp.Body)

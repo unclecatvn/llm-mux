@@ -1,9 +1,9 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,16 +17,6 @@ import (
 	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
 	"github.com/tidwall/sjson"
 	"golang.org/x/sync/singleflight"
-)
-
-const (
-	githubCopilotChatPath = "/chat/completions"
-	githubCopilotAuthType = "github-copilot"
-
-	copilotEditorVersion = "vscode/1.104.1"
-	copilotPluginVersion = "copilot/1.300.0"
-	copilotIntegrationID = "vscode-chat"
-	copilotOpenAIIntent  = "conversation-panel"
 )
 
 // GitHubCopilotExecutor handles requests to the GitHub Copilot API.
@@ -49,7 +39,7 @@ func NewGitHubCopilotExecutor(cfg *config.Config) *GitHubCopilotExecutor {
 	}
 }
 
-func (e *GitHubCopilotExecutor) Identifier() string { return githubCopilotAuthType }
+func (e *GitHubCopilotExecutor) Identifier() string { return GitHubCopilotAuthType }
 
 func (e *GitHubCopilotExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error {
 	return nil
@@ -73,16 +63,19 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 	body = applyPayloadConfig(e.cfg, req.Model, body)
 	body, _ = sjson.SetBytes(body, "stream", false)
 
-	url := GitHubCopilotDefaultBaseURL + githubCopilotChatPath
+	url := GitHubCopilotDefaultBaseURL + GitHubCopilotChatPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
 	}
-	e.applyHeaders(httpReq, apiToken)
+	applyCopilotHeaders(httpReq, apiToken, false)
 
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return resp, NewTimeoutError("request timed out")
+		}
 		return resp, err
 	}
 	defer func() { _ = httpResp.Body.Close() }()
@@ -134,16 +127,19 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.SetBytes(body, "stream_options.include_usage", true)
 
-	url := GitHubCopilotDefaultBaseURL + githubCopilotChatPath
+	url := GitHubCopilotDefaultBaseURL + GitHubCopilotChatPath
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	e.applyHeaders(httpReq, apiToken)
+	applyCopilotHeaders(httpReq, apiToken, true)
 
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, NewTimeoutError("request timed out")
+		}
 		return nil, err
 	}
 
@@ -153,68 +149,14 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		return nil, result.Error
 	}
 
-	out := make(chan cliproxyexecutor.StreamChunk)
-	stream = out
+	messageID := uuid.NewString()
+	processor := NewOpenAIStreamProcessor(e.cfg, from, req.Model, messageID)
 
-	go func() {
-		defer close(out)
-		defer func() { _ = httpResp.Body.Close() }()
-
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, DefaultStreamBufferSize)
-		messageID := uuid.NewString()
-		streamState := &OpenAIStreamState{}
-
-		for scanner.Scan() {
-			// Check context cancellation before processing each line
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			line := scanner.Bytes()
-
-			if bytes.HasPrefix(line, dataTag) {
-				data := bytes.TrimSpace(line[5:])
-				if bytes.Equal(data, []byte("[DONE]")) {
-					continue
-				}
-			}
-
-			// Translate stream chunk from OpenAI format and extract usage
-			result, errTranslate := TranslateOpenAIResponseStreamWithUsage(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
-			if errTranslate != nil {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Err: errTranslate}:
-				case <-ctx.Done():
-				}
-				return
-			}
-			if result.Usage != nil {
-				reporter.publish(ctx, result.Usage)
-			}
-			for _, chunk := range result.Chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-
-		if errScan := scanner.Err(); errScan != nil {
-			reporter.publishFailure(ctx)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
-		} else {
-			reporter.ensurePublished(ctx)
-		}
-	}()
-
-	return stream, nil
+	return RunSSEStream(ctx, httpResp.Body, reporter, processor, StreamConfig{
+		ExecutorName:    "github-copilot executor",
+		SkipDoneInData:  true,
+		EnsurePublished: true,
+	}), nil
 }
 
 func (e *GitHubCopilotExecutor) CountTokens(_ context.Context, _ *cliproxyauth.Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -294,16 +236,18 @@ func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *clipro
 	return result.(string), nil
 }
 
-func (e *GitHubCopilotExecutor) applyHeaders(r *http.Request, apiToken string) {
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer "+apiToken)
-	r.Header.Set("Accept", "application/json")
-	r.Header.Set("User-Agent", DefaultCopilotUserAgent)
-	r.Header.Set("Editor-Version", copilotEditorVersion)
-	r.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
-	r.Header.Set("Openai-Intent", copilotOpenAIIntent)
-	r.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
-	r.Header.Set("X-Request-Id", uuid.NewString())
+func applyCopilotHeaders(r *http.Request, apiToken string, stream bool) {
+	ApplyAPIHeaders(r, HeaderConfig{
+		Token:     apiToken,
+		UserAgent: DefaultCopilotUserAgent,
+		ExtraHeaders: map[string]string{
+			"Editor-Version":         CopilotEditorVersion,
+			"Editor-Plugin-Version":  CopilotPluginVersion,
+			"Openai-Intent":          CopilotOpenAIIntent,
+			"Copilot-Integration-Id": CopilotIntegrationID,
+			"X-Request-Id":           uuid.NewString(),
+		},
+	}, stream)
 }
 
 func isHTTPSuccessCode(statusCode int) bool {

@@ -15,6 +15,7 @@ import (
 	coreexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
 	"github.com/nghyane/llm-mux/sdk/config"
 	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
+	"github.com/tidwall/gjson"
 )
 
 type ErrorResponse struct {
@@ -203,6 +204,29 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 				return
 			}
 			if len(chunk.Payload) > 0 {
+				// Check if payload is an error message
+				if bytes.HasPrefix(chunk.Payload, []byte("data: {\"error\":")) {
+					// Extract JSON part after "data: "
+					jsonStart := bytes.Index(chunk.Payload, []byte("data: "))
+					if jsonStart >= 0 {
+						jsonData := chunk.Payload[jsonStart+6:] // Skip "data: "
+						// Remove trailing \n\n
+						jsonData = bytes.TrimSuffix(jsonData, []byte("\n\n"))
+						if gjson.ValidBytes(jsonData) {
+							if msg := gjson.GetBytes(jsonData, "error.message"); msg.Exists() {
+								err := fmt.Errorf("streaming error: %s", msg.String())
+								status, addon := extractErrorDetails(err)
+								errChan <- &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+								return
+							}
+						}
+					}
+					// Fallback
+					err := fmt.Errorf("streaming error")
+					status, addon := extractErrorDetails(err)
+					errChan <- &interfaces.ErrorMessage{StatusCode: status, Error: err, Addon: addon}
+					return
+				}
 				dataChan <- chunk.Payload // No clone needed, executor already owns this
 			}
 		}

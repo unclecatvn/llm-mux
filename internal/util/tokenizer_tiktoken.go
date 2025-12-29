@@ -1,7 +1,7 @@
 package util
 
 import (
-	"encoding/json"
+	"github.com/nghyane/llm-mux/internal/json"
 	"strings"
 	"sync"
 
@@ -67,7 +67,13 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 	const tokensPerMessage int64 = 3
 
 	if req.Instructions != "" {
-		totalTokens += countTokens(enc, req.Instructions) + tokensPerMessage
+		if cached, ok := InstructionTokenCache.Get(req.Instructions); ok {
+			totalTokens += int64(cached) + tokensPerMessage
+		} else {
+			tokens := countTokens(enc, req.Instructions)
+			InstructionTokenCache.Set(req.Instructions, int(tokens))
+			totalTokens += tokens + tokensPerMessage
+		}
 	}
 
 	sb := acquireBuilder()
@@ -90,7 +96,7 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 			case ir.ContentTypeText:
 				if len(part.Text) > TokenEstimationThreshold {
 					if sb.Len() > 0 {
-						totalTokens += countTokens(enc, sb.String())
+						totalTokens += countTokensWithCache(enc, sb.String(), ContentTokenCache)
 						sb.Reset()
 					}
 					// Estimate large text directly
@@ -104,7 +110,7 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 			case ir.ContentTypeReasoning:
 				if len(part.Reasoning) > TokenEstimationThreshold {
 					if sb.Len() > 0 {
-						totalTokens += countTokens(enc, sb.String())
+						totalTokens += countTokensWithCache(enc, sb.String(), ContentTokenCache)
 						sb.Reset()
 					}
 					totalTokens += estimateTokens(part.Reasoning)
@@ -122,7 +128,7 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 				if part.CodeExecution != nil && part.CodeExecution.Output != "" {
 					if len(part.CodeExecution.Output) > TokenEstimationThreshold {
 						if sb.Len() > 0 {
-							totalTokens += countTokens(enc, sb.String())
+							totalTokens += countTokensWithCache(enc, sb.String(), ContentTokenCache)
 							sb.Reset()
 						}
 						totalTokens += estimateTokens(part.CodeExecution.Output)
@@ -137,7 +143,7 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 				if part.CodeExecution != nil && part.CodeExecution.Code != "" {
 					if len(part.CodeExecution.Code) > TokenEstimationThreshold {
 						if sb.Len() > 0 {
-							totalTokens += countTokens(enc, sb.String())
+							totalTokens += countTokensWithCache(enc, sb.String(), ContentTokenCache)
 							sb.Reset()
 						}
 						totalTokens += estimateTokens(part.CodeExecution.Code)
@@ -158,7 +164,7 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 					if part.File.FileData != "" {
 						if len(part.File.FileData) > TokenEstimationThreshold {
 							if sb.Len() > 0 {
-								totalTokens += countTokens(enc, sb.String())
+								totalTokens += countTokensWithCache(enc, sb.String(), ContentTokenCache)
 								sb.Reset()
 							}
 							totalTokens += estimateTokens(part.File.FileData)
@@ -192,14 +198,21 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 					// Simplified: just estimate if result is huge
 					if len(part.ToolResult.Result) > TokenEstimationThreshold {
 						if sb.Len() > 0 {
-							totalTokens += countTokens(enc, sb.String())
+							totalTokens += countTokensWithCache(enc, sb.String(), ContentTokenCache)
 							sb.Reset()
 						}
 						sb.WriteString("\nTool ")
 						sb.WriteString(part.ToolResult.ToolCallID)
 						sb.WriteString(" result: ")
 						// Flush header
-						totalTokens += countTokens(enc, sb.String())
+						headerStr := sb.String()
+						if cached, ok := ContentTokenCache.Get(headerStr); ok {
+							totalTokens += int64(cached)
+						} else {
+							tokens := countTokens(enc, headerStr)
+							ContentTokenCache.Set(headerStr, int(tokens))
+							totalTokens += tokens
+						}
 						sb.Reset()
 
 						totalTokens += estimateTokens(part.ToolResult.Result)
@@ -215,6 +228,12 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 					// Count files in tool results
 					totalTokens += int64(len(part.ToolResult.Files) * DocTokenCost)
 				}
+
+			case ir.ContentTypeRedactedThinking:
+				// Estimate tokens for encrypted binary data
+				if len(part.RedactedData) > 0 {
+					totalTokens += int64(len(part.RedactedData) / 4)
+				}
 			}
 		}
 
@@ -226,13 +245,27 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 			sb.WriteByte('(')
 			if len(tc.Args) > TokenEstimationThreshold {
 				// Flush prefix
-				totalTokens += countTokens(enc, sb.String())
+				prefixStr := sb.String()
+				if cached, ok := ContentTokenCache.Get(prefixStr); ok {
+					totalTokens += int64(cached)
+				} else {
+					tokens := countTokens(enc, prefixStr)
+					ContentTokenCache.Set(prefixStr, int(tokens))
+					totalTokens += tokens
+				}
 				sb.Reset()
 
 				totalTokens += estimateTokens(tc.Args)
 				sb.WriteByte(')')
 				// Flush suffix
-				totalTokens += countTokens(enc, sb.String())
+				suffixStr := sb.String()
+				if cached, ok := ContentTokenCache.Get(suffixStr); ok {
+					totalTokens += int64(cached)
+				} else {
+					tokens := countTokens(enc, suffixStr)
+					ContentTokenCache.Set(suffixStr, int(tokens))
+					totalTokens += tokens
+				}
 				sb.Reset()
 				hasContentToCount = false
 			} else {
@@ -249,7 +282,14 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 
 		// Final flush for this message
 		if hasContentToCount && sb.Len() > 0 {
-			totalTokens += countTokens(enc, sb.String())
+			contentStr := sb.String()
+			if cached, ok := ContentTokenCache.Get(contentStr); ok {
+				totalTokens += int64(cached)
+			} else {
+				tokens := countTokens(enc, contentStr)
+				ContentTokenCache.Set(contentStr, int(tokens))
+				totalTokens += tokens
+			}
 		}
 
 	}
@@ -257,6 +297,11 @@ func CountTiktokenTokens(model string, req *ir.UnifiedChatRequest) int64 {
 	// Count tool definitions (schema)
 	// Claude/OpenAI include tool definitions in input token count
 	totalTokens += countToolDefinitionsTokens(enc, req.Tools)
+
+	// Add reply priming overhead
+	// Claude/OpenAI APIs count tokens for the assistant response header.
+	// This is approximately 3 tokens for message framing.
+	totalTokens += 3
 
 	return totalTokens
 }
@@ -359,6 +404,15 @@ func countTokens(enc tokenizer.Codec, s string) int64 {
 	return int64(len(ids))
 }
 
+func countTokensWithCache(enc tokenizer.Codec, s string, cache *TokenCache) int64 {
+	if cached, ok := cache.Get(s); ok {
+		return int64(cached)
+	}
+	tokens := countTokens(enc, s)
+	cache.Set(s, int(tokens))
+	return tokens
+}
+
 // countJSONTokens is unused but kept for potential future use.
 func countRoleTokens(enc tokenizer.Codec, role string) int64 {
 	roleTokenCacheMu.RLock()
@@ -434,10 +488,18 @@ func countToolDefinitionsTokens(enc tokenizer.Codec, tools []ir.ToolDefinition) 
 	if err != nil {
 		return 0
 	}
+	dataStr := string(data)
+	if cached, ok := ToolTokenCache.Get(dataStr); ok {
+		return int64(cached)
+	}
 	// Use estimation for very large schemas (rare)
 	if len(data) > TokenEstimationThreshold {
-		return int64(float64(len(data)) / 3.5)
+		tokens := int64(float64(len(data)) / 3.5)
+		ToolTokenCache.Set(dataStr, int(tokens))
+		return tokens
 	}
-	ids, _, _ := enc.Encode(string(data))
-	return int64(len(ids))
+	ids, _, _ := enc.Encode(dataStr)
+	tokens := int64(len(ids))
+	ToolTokenCache.Set(dataStr, int(tokens))
+	return tokens
 }

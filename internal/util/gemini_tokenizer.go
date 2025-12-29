@@ -2,8 +2,8 @@
 package util
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/nghyane/llm-mux/internal/json"
 	"strings"
 	"sync"
 
@@ -58,6 +58,8 @@ func CountTokensFromIR(model string, req *ir.UnifiedChatRequest) int64 {
 		return 0
 	}
 
+	model = strings.ToLower(model)
+
 	// Dispatch to appropriate tokenizer
 	if isGeminiModel(model) {
 		return countGeminiTokens(model, req)
@@ -65,6 +67,17 @@ func CountTokensFromIR(model string, req *ir.UnifiedChatRequest) int64 {
 
 	// For Claude, OpenAI, Qwen, etc.
 	return CountTiktokenTokens(model, req)
+}
+
+// CountGeminiTokensFromIR always uses Gemini tokenizer regardless of model name.
+// Use this when requests are translated to Gemini format (e.g., Claude via Antigravity/Vertex).
+// The backend (Gemini API) will tokenize using Gemini's tokenizer, so we must match that.
+func CountGeminiTokensFromIR(req *ir.UnifiedChatRequest) int64 {
+	if req == nil {
+		return 0
+	}
+	// Use a standard Gemini model for tokenization
+	return countGeminiTokens("gemini-2.0-flash", req)
 }
 
 // mediaCounts tracks non-text media elements for token estimation.
@@ -102,12 +115,18 @@ func countGeminiTokens(model string, req *ir.UnifiedChatRequest) int64 {
 
 	// Count instructions tokens (Responses API system instructions)
 	if req.Instructions != "" {
-		instructionContent := &genai.Content{
-			Role:  "user",
-			Parts: []*genai.Part{genai.NewPartFromText(req.Instructions)},
-		}
-		if result, err := tok.CountTokens([]*genai.Content{instructionContent}, nil); err == nil {
-			contentTokens += int64(result.TotalTokens)
+		if cached, ok := InstructionTokenCache.Get(req.Instructions); ok {
+			contentTokens += int64(cached)
+		} else {
+			instructionContent := &genai.Content{
+				Role:  "user",
+				Parts: []*genai.Part{genai.NewPartFromText(req.Instructions)},
+			}
+			if result, err := tok.CountTokens([]*genai.Content{instructionContent}, nil); err == nil {
+				tokens := int(result.TotalTokens)
+				InstructionTokenCache.Set(req.Instructions, tokens)
+				contentTokens += int64(tokens)
+			}
 		}
 	}
 
@@ -159,32 +178,33 @@ func getTokenizer(model string) (*tokenizer.LocalTokenizer, error) {
 //   - gemini-1.0-pro, gemini-1.5-pro, gemini-1.5-flash → gemma2 tokenizer
 //   - gemini-2.0-flash, gemini-2.0-flash-lite → gemma3 tokenizer
 //   - gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite → gemma3 tokenizer
+//
+// Assumes model is already lowercase.
 func normalizeModel(model string) string {
-	lower := strings.ToLower(model)
 	switch {
 	// Gemini 2.5 series - use gemini-2.5-flash (officially supported)
-	case strings.Contains(lower, "gemini-2.5-flash-lite"):
+	case strings.Contains(model, "gemini-2.5-flash-lite"):
 		return "gemini-2.5-flash-lite"
-	case strings.Contains(lower, "gemini-2.5-flash"):
+	case strings.Contains(model, "gemini-2.5-flash"):
 		return "gemini-2.5-flash"
-	case strings.Contains(lower, "gemini-2.5-pro"):
+	case strings.Contains(model, "gemini-2.5-pro"):
 		return "gemini-2.5-pro"
 	// Gemini 3 series - fallback to gemini-2.5-flash (same gemma3 tokenizer)
-	case strings.Contains(lower, "gemini-3"):
+	case strings.Contains(model, "gemini-3"):
 		return "gemini-2.5-flash"
 	// Gemini 2.0 series
-	case strings.Contains(lower, "gemini-2.0-flash-lite"):
+	case strings.Contains(model, "gemini-2.0-flash-lite"):
 		return "gemini-2.0-flash-lite"
-	case strings.Contains(lower, "gemini-2.0"):
+	case strings.Contains(model, "gemini-2.0"):
 		return "gemini-2.0-flash"
 	// Gemini 1.5 series
-	case strings.Contains(lower, "gemini-1.5-pro"):
+	case strings.Contains(model, "gemini-1.5-pro"):
 		return "gemini-1.5-pro"
-	case strings.Contains(lower, "gemini-1.5"):
+	case strings.Contains(model, "gemini-1.5"):
 		return "gemini-1.5-flash"
 	// Gemini 1.0 series
-	case strings.Contains(lower, "gemini-1.0"),
-		strings.Contains(lower, "gemini-pro"):
+	case strings.Contains(model, "gemini-1.0"),
+		strings.Contains(model, "gemini-pro"):
 		return "gemini-1.0-pro"
 	// Default to gemini-2.5-flash for unknown models (most current)
 	default:
@@ -200,9 +220,8 @@ func normalizeModel(model string) string {
 //
 // This ensures models proxied through Gemini infrastructure but using different
 // tokenizers are handled correctly.
+// Assumes model is already lowercase.
 func isGeminiModel(model string) bool {
-	lower := strings.ToLower(model)
-
 	// Non-Gemini models that should use tiktoken
 	nonGeminiPatterns := []string{
 		"claude",    // Claude models (even gemini-claude-*)
@@ -216,13 +235,13 @@ func isGeminiModel(model string) bool {
 	}
 
 	for _, pattern := range nonGeminiPatterns {
-		if strings.Contains(lower, pattern) {
+		if strings.Contains(model, pattern) {
 			return false
 		}
 	}
 
 	// Must contain "gemini" to be considered a Gemini model
-	return strings.Contains(lower, "gemini")
+	return strings.Contains(model, "gemini")
 }
 
 // buildContentsFromIR converts IR messages to genai.Content slice for token counting.
@@ -286,11 +305,8 @@ func messageToContent(msg *ir.Message) (*genai.Content, mediaCounts) {
 			if part.Reasoning != "" {
 				parts = append(parts, genai.NewPartFromText(part.Reasoning))
 			}
-			// ThoughtSignature is binary data, estimate tokens
-			if len(part.ThoughtSignature) > 0 {
-				// Binary signatures are typically compact, estimate ~4 bytes per token
-				parts = append(parts, genai.NewPartFromText(string(part.ThoughtSignature)))
-			}
+			// ThoughtSignature is binary data, skip tokenization
+			// (estimated tokens would be len(part.ThoughtSignature) / 4)
 
 		case ir.ContentTypeImage:
 			if part.Image != nil {
@@ -347,10 +363,8 @@ func messageToContent(msg *ir.Message) (*genai.Content, mediaCounts) {
 		tc := &msg.ToolCalls[i]
 		text := formatFunctionCall(tc.Name, tc.Args)
 		parts = append(parts, genai.NewPartFromText(text))
-		// ThoughtSignature in tool calls
-		if len(tc.ThoughtSignature) > 0 {
-			parts = append(parts, genai.NewPartFromText(string(tc.ThoughtSignature)))
-		}
+		// ThoughtSignature in tool calls is binary data, skip tokenization
+		// (estimated tokens would be len(tc.ThoughtSignature) / 4)
 	}
 
 	if len(parts) == 0 {
@@ -379,9 +393,14 @@ func countToolTokensFromIR(tok *tokenizer.LocalTokenizer, tools []ir.ToolDefinit
 		return 0
 	}
 
+	toolsJSONStr := string(toolsJSON)
+	if cached, ok := ToolTokenCache.Get(toolsJSONStr); ok {
+		return int64(cached)
+	}
+
 	content := &genai.Content{
 		Role:  "user",
-		Parts: []*genai.Part{genai.NewPartFromText(string(toolsJSON))},
+		Parts: []*genai.Part{genai.NewPartFromText(toolsJSONStr)},
 	}
 
 	result, err := tok.CountTokens([]*genai.Content{content}, nil)
@@ -389,7 +408,9 @@ func countToolTokensFromIR(tok *tokenizer.LocalTokenizer, tools []ir.ToolDefinit
 		return 0
 	}
 
-	return int64(result.TotalTokens)
+	tokens := int(result.TotalTokens)
+	ToolTokenCache.Set(toolsJSONStr, tokens)
+	return int64(tokens)
 }
 
 // =============================================================================

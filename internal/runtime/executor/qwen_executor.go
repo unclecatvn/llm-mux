@@ -1,9 +1,9 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,15 +13,9 @@ import (
 	"github.com/nghyane/llm-mux/internal/config"
 	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-)
-
-const (
-	qwenXGoogAPIClient      = "gl-node/22.17.0"
-	qwenClientMetadataValue = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
 )
 
 // QwenExecutor is a stateless executor for Qwen Code using OpenAI-compatible chat completions.
@@ -62,6 +56,9 @@ func (e *QwenExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return resp, NewTimeoutError("request timed out")
+		}
 		return resp, err
 	}
 	defer func() {
@@ -126,6 +123,9 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, NewTimeoutError("request timed out")
+		}
 		return nil, err
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
@@ -133,94 +133,18 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		_ = httpResp.Body.Close()
 		return nil, result.Error
 	}
-	out := make(chan cliproxyexecutor.StreamChunk)
-	stream = out
-	messageID := "chatcmpl-" + req.Model
-	go func() {
-		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("qwen executor: close response body error: %v", errClose)
-			}
-		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
-		var streamState *OpenAIStreamState
-		for scanner.Scan() {
-			// Check context cancellation before processing each line
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
 
-			line := scanner.Bytes()
-			result, err := TranslateOpenAIResponseStreamWithUsage(e.cfg, from, bytes.Clone(line), req.Model, messageID, streamState)
-			if err != nil {
-				reporter.publishFailure(ctx)
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Err: err}:
-				case <-ctx.Done():
-				}
-				return
-			}
-			if result.Usage != nil {
-				reporter.publish(ctx, result.Usage)
-			}
-			for _, chunk := range result.Chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-		// Handle [DONE] signal
-		doneResult, _ := TranslateOpenAIResponseStreamWithUsage(e.cfg, from, []byte("[DONE]"), req.Model, messageID, streamState)
-		for _, chunk := range doneResult.Chunks {
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-			case <-ctx.Done():
-				return
-			}
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			reporter.publishFailure(ctx)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
-		}
-	}()
-	return stream, nil
+	messageID := "chatcmpl-" + req.Model
+	processor := NewOpenAIStreamProcessor(e.cfg, from, req.Model, messageID)
+
+	return RunSSEStream(ctx, httpResp.Body, reporter, processor, StreamConfig{
+		ExecutorName:     "qwen executor",
+		HandleDoneSignal: true,
+	}), nil
 }
 
 func (e *QwenExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
-	if err != nil {
-		return cliproxyexecutor.Response{}, err
-	}
-
-	modelName := gjson.GetBytes(body, "model").String()
-	if strings.TrimSpace(modelName) == "" {
-		modelName = req.Model
-	}
-
-	enc, err := tokenizerForModel(modelName)
-	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("qwen executor: tokenizer init failed: %w", err)
-	}
-
-	count, err := countOpenAIChatTokens(enc, body)
-	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("qwen executor: token counting failed: %w", err)
-	}
-
-	usageJSON := buildOpenAIUsageJSON(count)
-	to := formatOpenAI
-	translated := sdktranslator.TranslateTokenCount(ctx, to, from, count, usageJSON)
-	return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
+	return CountTokensForOpenAIProvider(ctx, e.cfg, "qwen executor", opts.SourceFormat, req.Model, req.Payload, req.Metadata)
 }
 
 func (e *QwenExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -250,16 +174,14 @@ func (e *QwenExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 }
 
 func applyQwenHeaders(r *http.Request, token string, stream bool) {
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer "+token)
-	r.Header.Set("User-Agent", DefaultQwenUserAgent)
-	r.Header.Set("X-Goog-Api-Client", qwenXGoogAPIClient)
-	r.Header.Set("Client-Metadata", qwenClientMetadataValue)
-	if stream {
-		r.Header.Set("Accept", "text/event-stream")
-		return
-	}
-	r.Header.Set("Accept", "application/json")
+	ApplyAPIHeaders(r, HeaderConfig{
+		Token:     token,
+		UserAgent: DefaultQwenUserAgent,
+		ExtraHeaders: map[string]string{
+			"X-Goog-Api-Client": QwenXGoogAPIClient,
+			"Client-Metadata":   QwenClientMetadataValue,
+		},
+	}, stream)
 }
 
 // qwenCreds extracts credentials for Qwen API.

@@ -40,6 +40,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -279,6 +280,14 @@ func (h *RetryHandler) calculateDelayForError() time.Duration {
 	delay := h.config.BaseDelay * time.Duration(1<<h.retrier.retryCount)
 	if delay > h.config.MaxDelay {
 		delay = h.config.MaxDelay
+	}
+	// Add jitter: random value between 0-25% of the delay
+	if delay > 0 {
+		jitter := time.Duration(rand.Int63n(int64(delay) / 4))
+		delay += jitter
+		if delay > h.config.MaxDelay {
+			delay = h.config.MaxDelay
+		}
 	}
 	return delay
 }

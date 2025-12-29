@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,6 +80,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return resp, NewTimeoutError("request timed out")
+		}
 		return resp, err
 	}
 	defer func() {
@@ -151,6 +155,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, NewTimeoutError("request timed out")
+		}
 		return nil, err
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
@@ -158,7 +165,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		_ = httpResp.Body.Close()
 		return nil, result.Error
 	}
-	out := make(chan cliproxyexecutor.StreamChunk)
+	out := make(chan cliproxyexecutor.StreamChunk, 8)
 	stream = out
 	go func() {
 		defer close(out)
@@ -168,7 +175,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 		}()
 		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
+		buf := scannerBufferPool.Get().([]byte)
+		defer scannerBufferPool.Put(buf)
+		scanner.Buffer(buf, DefaultStreamBufferSize)
 		streamState := &OpenAIStreamState{}
 		messageID := "chatcmpl-" + req.Model
 		for scanner.Scan() {

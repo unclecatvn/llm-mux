@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,11 +26,6 @@ import (
 	"github.com/tidwall/sjson"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-)
-
-const (
-	// glAPIVersion is the API version used for Gemini requests.
-	glAPIVersion = "v1beta"
 )
 
 // GeminiExecutor is a stateless executor for the official Gemini API using API keys.
@@ -88,10 +84,21 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 	}
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, req.Model, action)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(req.Model)
+	ub.WriteString(":")
+	ub.WriteString(action)
 	if opts.Alt != "" && action != "countTokens" {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		ub.WriteString("?$alt=")
+		ub.WriteString(opts.Alt)
 	}
+	url := ub.String()
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
@@ -110,6 +117,9 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return resp, NewTimeoutError("request timed out")
+		}
 		return resp, err
 	}
 	defer func() {
@@ -161,12 +171,22 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body = applyPayloadConfig(e.cfg, req.Model, body)
 
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, req.Model, "streamGenerateContent")
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(req.Model)
+	ub.WriteString(":streamGenerateContent")
 	if opts.Alt == "" {
-		url = url + "?alt=sse"
+		ub.WriteString("?alt=sse")
 	} else {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		ub.WriteString("?$alt=")
+		ub.WriteString(opts.Alt)
 	}
+	url := ub.String()
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
@@ -185,6 +205,9 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, NewTimeoutError("request timed out")
+		}
 		return nil, err
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
@@ -192,7 +215,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		_ = httpResp.Body.Close()
 		return nil, result.Error
 	}
-	out := make(chan cliproxyexecutor.StreamChunk)
+	out := make(chan cliproxyexecutor.StreamChunk, 8)
 	stream = out
 
 	// Use pre-calculated input tokens from translation
@@ -205,8 +228,10 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				log.Errorf("gemini executor: close response body error: %v", errClose)
 			}
 		}()
+		buf := scannerBufferPool.Get().([]byte)
+		defer scannerBufferPool.Put(buf)
 		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
+		scanner.Buffer(buf, DefaultStreamBufferSize)
 		streamState := &GeminiCLIStreamState{
 			ClaudeState: from_ir.NewClaudeStreamState(),
 		}
@@ -277,7 +302,16 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
 
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, req.Model, "countTokens")
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(128)
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(GeminiGLAPIVersion)
+	ub.WriteString("/models/")
+	ub.WriteString(req.Model)
+	ub.WriteString(":countTokens")
+	url := ub.String()
 
 	requestBody := bytes.NewReader(translatedReq)
 
@@ -296,6 +330,9 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return cliproxyexecutor.Response{}, NewTimeoutError("request timed out")
+		}
 		return cliproxyexecutor.Response{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()

@@ -2,6 +2,13 @@ package ir
 
 import "strings"
 
+// NormalizeModel converts model name to lowercase for consistent processing.
+// Callers should use this to normalize model strings once before passing
+// to functions that perform case-insensitive checks.
+func NormalizeModel(model string) string {
+	return strings.ToLower(model)
+}
+
 func IsGemini3(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "gemini-3")
 }
@@ -138,4 +145,4 @@ func IsValidThoughtSignature(ts []byte) bool {
 	return true
 }
 
-const DummyThoughtSignature = "context_engineering_is_the_way_to_go"
+const DummyThoughtSignature = "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=" // base64("skip_thought_signature_validator")

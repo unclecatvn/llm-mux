@@ -26,8 +26,9 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/nghyane/llm-mux/internal/json"
 	"io"
 	"net/http"
 	"strings"
@@ -89,9 +90,21 @@ func (s *serviceAccountStrategy) GetToken(ctx context.Context, cfg *config.Confi
 
 func (s *serviceAccountStrategy) BuildURL(model, action string, opts cliproxyexecutor.Options) string {
 	baseURL := vertexBaseURL(s.location)
-	url := fmt.Sprintf("%s/%s/projects/%s/locations/%s/publishers/google/models/%s:%s",
-		baseURL, vertexAPIVersion, s.projectID, s.location, model, action)
-	return url
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(150) // vertex URLs are longer
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(vertexAPIVersion)
+	ub.WriteString("/projects/")
+	ub.WriteString(s.projectID)
+	ub.WriteString("/locations/")
+	ub.WriteString(s.location)
+	ub.WriteString("/publishers/google/models/")
+	ub.WriteString(model)
+	ub.WriteString(":")
+	ub.WriteString(action)
+	return ub.String()
 }
 
 func (s *serviceAccountStrategy) ApplyAuth(req *http.Request, token string) {
@@ -115,7 +128,17 @@ func (s *apiKeyStrategy) BuildURL(model, action string, _ cliproxyexecutor.Optio
 	if baseURL == "" {
 		baseURL = "https://generativelanguage.googleapis.com"
 	}
-	return fmt.Sprintf("%s/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, model, action)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(150) // vertex URLs are longer
+	ub.WriteString(baseURL)
+	ub.WriteString("/")
+	ub.WriteString(vertexAPIVersion)
+	ub.WriteString("/publishers/google/models/")
+	ub.WriteString(model)
+	ub.WriteString(":")
+	ub.WriteString(action)
+	return ub.String()
 }
 
 func (s *apiKeyStrategy) ApplyAuth(req *http.Request, token string) {
@@ -202,7 +225,7 @@ func (e *GeminiVertexExecutor) executeWithStrategy(ctx context.Context, auth *cl
 
 	url := strategy.BuildURL(req.Model, action, opts)
 	if opts.Alt != "" && action != "countTokens" {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		url = url + "?$alt=" + opts.Alt
 	}
 	// Delete session_id for API key auth (apiKeyStrategy)
 	if _, ok := strategy.(*apiKeyStrategy); ok {
@@ -226,6 +249,9 @@ func (e *GeminiVertexExecutor) executeWithStrategy(ctx context.Context, auth *cl
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
+		if errors.Is(errDo, context.DeadlineExceeded) {
+			return resp, NewTimeoutError("request timed out")
+		}
 		return resp, errDo
 	}
 	defer func() {
@@ -284,7 +310,7 @@ func (e *GeminiVertexExecutor) executeStreamWithStrategy(ctx context.Context, au
 	if opts.Alt == "" {
 		url = url + "?alt=sse"
 	} else {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		url = url + "?$alt=" + opts.Alt
 	}
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
@@ -305,6 +331,9 @@ func (e *GeminiVertexExecutor) executeStreamWithStrategy(ctx context.Context, au
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
+		if errors.Is(errDo, context.DeadlineExceeded) {
+			return nil, NewTimeoutError("request timed out")
+		}
 		return nil, errDo
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
@@ -375,6 +404,9 @@ func (e *GeminiVertexExecutor) countTokensWithStrategy(ctx context.Context, auth
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
+		if errors.Is(errDo, context.DeadlineExceeded) {
+			return cliproxyexecutor.Response{}, NewTimeoutError("request timed out")
+		}
 		return cliproxyexecutor.Response{}, errDo
 	}
 	defer func() {
@@ -498,7 +530,13 @@ func vertexBaseURL(location string) string {
 	if loc == "" {
 		loc = "us-central1"
 	}
-	return fmt.Sprintf("https://%s-aiplatform.googleapis.com", loc)
+	ub := GetURLBuilder()
+	defer ub.Release()
+	ub.Grow(64)
+	ub.WriteString("https://")
+	ub.WriteString(loc)
+	ub.WriteString("-aiplatform.googleapis.com")
+	return ub.String()
 }
 
 func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, saJSON []byte) (string, error) {

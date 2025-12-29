@@ -9,9 +9,9 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +21,6 @@ import (
 	"github.com/nghyane/llm-mux/internal/config"
 	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -77,6 +76,9 @@ func (e *ClineExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return resp, NewTimeoutError("request timed out")
+		}
 		return resp, err
 	}
 	defer func() {
@@ -141,6 +143,9 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, NewTimeoutError("request timed out")
+		}
 		return nil, err
 	}
 
@@ -150,97 +155,46 @@ func (e *ClineExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, result.Error
 	}
 
-	out := make(chan cliproxyexecutor.StreamChunk)
-	stream = out
+	messageID := "chatcmpl-" + req.Model
+	processor := NewOpenAIStreamProcessor(e.cfg, from, req.Model, messageID)
+	processor.Preprocess = clinePreprocess
 
-	go func() {
-		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("cline executor: close response body error: %v", errClose)
-			}
-		}()
+	return RunSSEStream(ctx, httpResp.Body, reporter, processor, StreamConfig{
+		ExecutorName:       "cline executor",
+		Preprocessor:       ClineDataTagPreprocessor(),
+		SkipDoneInData:     true,
+		PassthroughOnEmpty: true,
+	}), nil
+}
 
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(make([]byte, 64*1024), DefaultStreamBufferSize)
-
-		// State for translator (tracks reasoning tokens)
-		streamState := &OpenAIStreamState{}
-		messageID := "chatcmpl-" + req.Model
-
-		firstChunk := true
-		for scanner.Scan() {
-			// Check context cancellation before processing each line
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			line := scanner.Bytes()
-
-			payload := line
-			if bytes.HasPrefix(line, []byte("data: ")) {
-				payload = bytes.TrimSpace(line[6:])
-			} else if bytes.HasPrefix(line, []byte("data:")) {
-				payload = bytes.TrimSpace(line[5:])
-			}
-
-			if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-				continue
-			}
-
-			payload = convertClineReasoningToOpenAI(payload, firstChunk)
-
-			if !firstChunk && shouldSkipEmptyContentChunk(payload) {
-				continue
-			}
-
-			firstChunk = false
-
-			// Translate via IR (for reasoning_tokens tracking) and extract usage
-			lineWithPrefix := append([]byte("data: "), payload...)
-			result, errTranslate := TranslateOpenAIResponseStreamWithUsage(e.cfg, from, lineWithPrefix, req.Model, messageID, streamState)
-			if errTranslate != nil {
-				reporter.publishFailure(ctx)
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Err: errTranslate}:
-				case <-ctx.Done():
-				}
-				return
-			}
-			if result.Usage != nil {
-				reporter.publish(ctx, result.Usage)
-			}
-			if len(result.Chunks) > 0 {
-				for _, chunk := range result.Chunks {
-					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-					case <-ctx.Done():
-						return
-					}
-				}
-				continue
-			}
-
-			// Passthrough if translator returns nil
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Payload: bytes.Clone(payload)}:
-			case <-ctx.Done():
-				return
-			}
+// ClineDataTagPreprocessor creates a preprocessor that handles Cline's SSE format.
+// It strips "data:" prefix and skips [DONE] signals.
+func ClineDataTagPreprocessor() StreamPreprocessor {
+	return func(line []byte) (payload []byte, skip bool) {
+		payload = line
+		if bytes.HasPrefix(line, []byte("data: ")) {
+			payload = bytes.TrimSpace(line[6:])
+		} else if bytes.HasPrefix(line, []byte("data:")) {
+			payload = bytes.TrimSpace(line[5:])
 		}
 
-		if errScan := scanner.Err(); errScan != nil {
-			reporter.publishFailure(ctx)
-			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
-			}
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			return nil, true
 		}
-	}()
+		return payload, false
+	}
+}
 
-	return stream, nil
+// clinePreprocess transforms Cline-specific payload format to OpenAI format.
+func clinePreprocess(line []byte, firstChunk bool) []byte {
+	payload := convertClineReasoningToOpenAI(line, firstChunk)
+
+	if !firstChunk && shouldSkipEmptyContentChunk(payload) {
+		return nil
+	}
+
+	// Add data: prefix back for the translator
+	return append([]byte("data: "), payload...)
 }
 
 // clineCredentials extracts access token and base URL from auth metadata.
@@ -251,15 +205,13 @@ func clineCredentials(a *cliproxyauth.Auth) (token, baseURL string) {
 
 // applyClineHeaders applies necessary headers for Cline API requests.
 func (e *ClineExecutor) applyClineHeaders(req *http.Request, token string, stream bool) {
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	if stream {
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Cache-Control", "no-cache")
-		req.Header.Set("Connection", "keep-alive")
-	}
+	ApplyAPIHeaders(req, HeaderConfig{
+		Token: token,
+		StreamHeaders: map[string]string{
+			"Cache-Control": "no-cache",
+			"Connection":    "keep-alive",
+		},
+	}, stream)
 }
 
 // convertClineReasoningToOpenAI converts Cline API's "reasoning" field to OpenAI's "reasoning_content" field
@@ -303,37 +255,7 @@ func shouldSkipEmptyContentChunk(payload []byte) bool {
 
 // CountTokens counts tokens in the request for Cline models.
 func (e *ClineExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	from := opts.SourceFormat
-	body, err := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, nil)
-	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("cline executor: request translation failed: %w", err)
-	}
-
-	modelName := req.Model
-	if bodyModel := string(body); strings.Contains(bodyModel, `"model"`) {
-		start := strings.Index(bodyModel, `"model"`)
-		if start != -1 {
-			start = strings.Index(bodyModel[start:], `":`) + start + 2
-			end := strings.Index(bodyModel[start:], `"`) + start
-			if end > start {
-				modelName = strings.Trim(bodyModel[start:end], `"`)
-			}
-		}
-	}
-
-	enc, err := tokenizerForModel(modelName)
-	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("cline executor: tokenizer init failed: %w", err)
-	}
-
-	count, err := countOpenAIChatTokens(enc, body)
-	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("cline executor: token counting failed: %w", err)
-	}
-
-	usageJSON := buildOpenAIUsageJSON(count)
-	translated := sdktranslator.TranslateTokenCount(ctx, formatOpenAI, from, count, usageJSON)
-	return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
+	return CountTokensForOpenAIProvider(ctx, e.cfg, "cline executor", opts.SourceFormat, req.Model, req.Payload, nil)
 }
 
 // Refresh refreshes the Cline authentication tokens.
