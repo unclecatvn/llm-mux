@@ -3,7 +3,7 @@
  * llm-mux test via OpenCode SDK
  * Multi-turn conversation with tool usage
  */
-import { createOpencode, type Opencode } from "@opencode-ai/sdk";
+import { createOpencode, type OpencodeClient } from "@opencode-ai/sdk";
 
 const LLM_MUX_URL = Bun.env.LLM_MUX_URL ?? "http://localhost:8318";
 
@@ -29,7 +29,7 @@ const providers = {
 // Select provider: google | openai | anthropic
 const activeProvider = providers.anthropic;
 
-type Client = Opencode.Client;
+type Client = OpencodeClient;
 
 interface PromptResponse {
   parts?: Array<Record<string, unknown>>;
