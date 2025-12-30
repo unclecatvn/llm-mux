@@ -24,7 +24,6 @@ import (
 	"github.com/nghyane/llm-mux/internal/buildinfo"
 	"github.com/nghyane/llm-mux/internal/cmd"
 	"github.com/nghyane/llm-mux/internal/config"
-	"github.com/nghyane/llm-mux/internal/embedded"
 	"github.com/nghyane/llm-mux/internal/logging"
 	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/store"
@@ -318,7 +317,7 @@ func main() {
 			if errDir := os.MkdirAll(filepath.Dir(configFilePath), 0o700); errDir != nil {
 				log.Fatalf("failed to create config directory: %v", errDir)
 			}
-			if errWrite := os.WriteFile(configFilePath, embedded.DefaultConfigTemplate(), 0o600); errWrite != nil {
+			if errWrite := os.WriteFile(configFilePath, config.GenerateDefaultConfigYAML(), 0o600); errWrite != nil {
 				log.Fatalf("failed to write config from template: %v", errWrite)
 			}
 			if errCommit := gitStoreInst.PersistConfig(context.Background()); errCommit != nil {
@@ -490,7 +489,7 @@ func autoInitConfig(configPath string) {
 	}
 	authDir := filepath.Join(dir, "auth")
 	_ = os.MkdirAll(authDir, 0o700)
-	if err := os.WriteFile(configPath, embedded.DefaultConfigTemplate(), 0o600); err != nil {
+	if err := os.WriteFile(configPath, config.GenerateDefaultConfigYAML(), 0o600); err != nil {
 		return
 	}
 	fmt.Printf("First run: created config at %s\n", configPath)
@@ -516,7 +515,7 @@ func doInitConfig(configPath string, force bool) {
 
 	// Create config if missing
 	if !configExists {
-		if err := os.WriteFile(configPath, embedded.DefaultConfigTemplate(), 0o600); err != nil {
+		if err := os.WriteFile(configPath, config.GenerateDefaultConfigYAML(), 0o600); err != nil {
 			log.Fatalf("Failed to write config: %v", err)
 		}
 		fmt.Printf("Created: %s\n", configPath)

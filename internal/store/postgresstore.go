@@ -15,7 +15,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/nghyane/llm-mux/internal/embedded"
+	"github.com/nghyane/llm-mux/internal/config"
 	"github.com/nghyane/llm-mux/internal/provider"
 	log "github.com/sirupsen/logrus"
 )
@@ -404,7 +404,7 @@ func (s *PostgresStore) syncConfigFromDatabase(ctx context.Context) error {
 			if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
 				return fmt.Errorf("postgres store: prepare config directory: %w", errCreate)
 			}
-			if errWrite := os.WriteFile(s.configPath, embedded.DefaultConfigTemplate(), 0o600); errWrite != nil {
+			if errWrite := os.WriteFile(s.configPath, config.GenerateDefaultConfigYAML(), 0o600); errWrite != nil {
 				return fmt.Errorf("postgres store: write config from template: %w", errWrite)
 			}
 		}
