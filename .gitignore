@@ -53,3 +53,5 @@ gitstore/
 .gemini
 server.pid
 gitstore.bak
+custom-provider
+llm-mux
