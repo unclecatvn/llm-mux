@@ -96,11 +96,17 @@ types/interfaces → separate file
 ## Commands
 
 ```bash
-make build              # Build binary
-make test               # Run tests  
-make status             # Show version info
-make dev                # Dev release (Docker only)
-make release-v2.0.17    # Full release
+make build    # Build binary
+make test     # Run tests
+make clean    # Remove artifacts
+```
+
+## Release
+
+```bash
+./scripts/release.sh status          # Show version
+./scripts/release.sh release v2.0.17 # Full release
+./scripts/release.sh dev             # Docker dev release
 ```
 
 ## Testing
