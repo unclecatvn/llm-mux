@@ -12,13 +12,95 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/nghyane/llm-mux/sdk/config"
+	"github.com/nghyane/llm-mux/internal/translator/ir"
 	"gopkg.in/yaml.v3"
 )
 
+// SDKConfig represents the SDK-level configuration, loaded from a YAML file.
+// This is the base configuration that can be embedded in the full Config.
+type SDKConfig struct {
+	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
+	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+
+	// RequestLog enables or disables detailed request logging functionality.
+	RequestLog bool `yaml:"request-log" json:"request-log"`
+
+	// APIKeys is a list of keys for authenticating clients to this proxy server.
+	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+
+	// Access holds request authentication provider configuration.
+	Access AccessConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
+
+	// ShowProviderPrefixes enables visual provider prefixes in model IDs (e.g., "[Gemini CLI] gemini-2.5-pro").
+	// This is purely cosmetic and does not affect actual model routing to providers.
+	ShowProviderPrefixes bool `yaml:"show-provider-prefixes" json:"show-provider-prefixes"`
+}
+
+// AccessConfig groups request authentication providers.
+type AccessConfig struct {
+	// Providers lists configured authentication providers.
+	Providers []AccessProvider `yaml:"providers,omitempty" json:"providers,omitempty"`
+}
+
+// AccessProvider describes a request authentication provider entry.
+type AccessProvider struct {
+	// Name is the instance identifier for the provider.
+	Name string `yaml:"name" json:"name"`
+
+	// Type selects the provider implementation registered via the SDK.
+	Type string `yaml:"type" json:"type"`
+
+	// SDK optionally names a third-party SDK module providing this provider.
+	SDK string `yaml:"sdk,omitempty" json:"sdk,omitempty"`
+
+	// APIKeys lists inline keys for providers that require them.
+	APIKeys []string `yaml:"api-keys,omitempty" json:"api-keys,omitempty"`
+
+	// Config passes provider-specific options to the implementation.
+	Config map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
+}
+
+const (
+	// AccessProviderTypeConfigAPIKey is the built-in provider validating inline API keys.
+	AccessProviderTypeConfigAPIKey = "config-api-key"
+
+	// DefaultAccessProviderName is applied when no provider name is supplied.
+	DefaultAccessProviderName = "config-inline"
+)
+
+// ConfigAPIKeyProvider returns the first inline API key provider if present.
+func (c *SDKConfig) ConfigAPIKeyProvider() *AccessProvider {
+	if c == nil {
+		return nil
+	}
+	for i := range c.Access.Providers {
+		if c.Access.Providers[i].Type == AccessProviderTypeConfigAPIKey {
+			if c.Access.Providers[i].Name == "" {
+				c.Access.Providers[i].Name = DefaultAccessProviderName
+			}
+			return &c.Access.Providers[i]
+		}
+	}
+	return nil
+}
+
+// MakeInlineAPIKeyProvider constructs an inline API key provider configuration.
+// It returns nil when no keys are supplied.
+func MakeInlineAPIKeyProvider(keys []string) *AccessProvider {
+	if len(keys) == 0 {
+		return nil
+	}
+	provider := &AccessProvider{
+		Name:    DefaultAccessProviderName,
+		Type:    AccessProviderTypeConfigAPIKey,
+		APIKeys: append([]string(nil), keys...),
+	}
+	return provider
+}
+
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
-	config.SDKConfig `yaml:",inline"`
+	SDKConfig        `yaml:",inline"`
 	Port             int              `yaml:"port" json:"-"`
 	TLS              TLSConfig        `yaml:"tls" json:"tls"`
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
@@ -346,8 +428,9 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
+	buf := ir.GetBuffer()
+	defer ir.PutBuffer(buf)
+	enc := yaml.NewEncoder(buf)
 	enc.SetIndent(2)
 	if err = enc.Encode(&original); err != nil {
 		_ = enc.Close()
@@ -367,7 +450,7 @@ func sanitizeConfigForPersist(cfg *Config) *Config {
 	}
 	clone := *cfg
 	clone.SDKConfig = cfg.SDKConfig
-	clone.SDKConfig.Access = config.AccessConfig{}
+	clone.SDKConfig.Access = AccessConfig{}
 	return &clone
 }
 
@@ -408,8 +491,9 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
+	buf := ir.GetBuffer()
+	defer ir.PutBuffer(buf)
+	enc := yaml.NewEncoder(buf)
 	enc.SetIndent(2)
 	if err = enc.Encode(&root); err != nil {
 		_ = enc.Close()

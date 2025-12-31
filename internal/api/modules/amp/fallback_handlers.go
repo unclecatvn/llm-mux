@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nghyane/llm-mux/internal/util"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // AmpRouteType represents the type of routing decision made for an Amp request

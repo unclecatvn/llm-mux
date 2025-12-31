@@ -1,66 +1,55 @@
-// Package util provides utility functions for provider detection and header masking.
 package util
 
 import (
+	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
 	"github.com/nghyane/llm-mux/internal/registry"
-	log "github.com/sirupsen/logrus"
 )
 
-// GetProviderName determines all AI service providers capable of serving a registered model.
-// It queries the model registry and returns providers ordered by preference.
 func GetProviderName(modelName string) []string {
 	if modelName == "" {
-		log.Debugf("GetProviderName: empty modelName")
+		slog.Debug("GetProviderName: empty modelName")
 		return nil
 	}
 
-	// Normalize model ID using centralized normalizer
 	normalizer := registry.NewModelIDNormalizer()
 	cleanModelName := normalizer.NormalizeModelID(modelName)
-	log.Debugf("GetProviderName: modelName=%s, cleanModelName=%s", modelName, cleanModelName)
+	slog.Debug(fmt.Sprintf("GetProviderName: modelName=%s, cleanModelName=%s", modelName, cleanModelName))
 
 	modelProviders := registry.GetGlobalRegistry().GetModelProviders(cleanModelName)
-	log.Debugf("GetProviderName: modelProviders=%v", modelProviders)
+	slog.Debug(fmt.Sprintf("GetProviderName: modelProviders=%v", modelProviders))
 
 	return modelProviders
 }
 
-// NormalizeIncomingModelID normalizes model IDs from client requests.
-// Examples: "[Gemini CLI] model" -> "model", "[Antigravity] model" -> "model"
 func NormalizeIncomingModelID(modelID string) string {
 	normalizer := registry.NewModelIDNormalizer()
 	return normalizer.NormalizeModelID(modelID)
 }
 
-// ExtractProviderFromPrefixedModelID extracts the provider type from a prefixed model ID.
-// Examples: "[Gemini CLI] model" -> "gemini-cli", "model" -> ""
 func ExtractProviderFromPrefixedModelID(modelID string) string {
 	normalizer := registry.NewModelIDNormalizer()
 	return normalizer.ExtractProviderFromPrefixedID(modelID)
 }
 
-// ResolveAutoModel resolves the "auto" model name to an actual available model.
 func ResolveAutoModel(modelName string) string {
 	if modelName != "auto" {
 		return modelName
 	}
 
-	// Use empty string as handler type to get any available model
 	firstModel, err := registry.GetGlobalRegistry().GetFirstAvailableModel("")
 	if err != nil {
-		log.Warnf("Failed to resolve 'auto' model: %v, falling back to original model name", err)
+		slog.Warn(fmt.Sprintf("Failed to resolve 'auto' model: %v, falling back to original model name", err))
 		return modelName
 	}
 
-	log.Infof("Resolved 'auto' model to: %s", firstModel)
+	slog.Info(fmt.Sprintf("Resolved 'auto' model to: %s", firstModel))
 	return firstModel
 }
 
-
-// HideAPIKey obscures an API key for logging, showing only first and last few characters.
 func HideAPIKey(apiKey string) string {
 	if len(apiKey) > 8 {
 		return apiKey[:4] + "..." + apiKey[len(apiKey)-4:]
@@ -72,7 +61,6 @@ func HideAPIKey(apiKey string) string {
 	return apiKey
 }
 
-// MaskAuthorizationHeader masks the Authorization header value while preserving the auth type prefix.
 func MaskAuthorizationHeader(value string) string {
 	parts := strings.SplitN(strings.TrimSpace(value), " ", 2)
 	if len(parts) < 2 {
@@ -81,8 +69,6 @@ func MaskAuthorizationHeader(value string) string {
 	return parts[0] + " " + HideAPIKey(parts[1])
 }
 
-// MaskSensitiveHeaderValue masks sensitive header values while preserving expected formats.
-// Handles Authorization headers (preserves auth type prefix) and API key headers.
 func MaskSensitiveHeaderValue(key, value string) string {
 	lowerKey := strings.ToLower(strings.TrimSpace(key))
 	switch {
@@ -98,7 +84,6 @@ func MaskSensitiveHeaderValue(key, value string) string {
 	}
 }
 
-// MaskSensitiveQuery masks sensitive query parameters, e.g. auth_token, within the raw query string.
 func MaskSensitiveQuery(raw string) string {
 	if raw == "" {
 		return ""

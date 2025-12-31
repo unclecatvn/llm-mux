@@ -1,10 +1,11 @@
 package oauth
 
 import (
-	"bytes"
 	"embed"
 	"html/template"
 	"sync"
+
+	"github.com/nghyane/llm-mux/internal/translator/ir"
 )
 
 //go:embed templates/*.html
@@ -77,8 +78,9 @@ func RenderSuccess() (string, error) {
 		return "", tmplInitErr
 	}
 
-	var buf bytes.Buffer
-	if err := tmplSuccess.ExecuteTemplate(&buf, "base", successData{}); err != nil {
+	buf := ir.GetBuffer()
+	defer ir.PutBuffer(buf)
+	if err := tmplSuccess.ExecuteTemplate(buf, "base", successData{}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
@@ -91,8 +93,9 @@ func RenderError(message string) (string, error) {
 		return "", tmplInitErr
 	}
 
-	var buf bytes.Buffer
-	if err := tmplError.ExecuteTemplate(&buf, "base", errorData{Message: message}); err != nil {
+	buf := ir.GetBuffer()
+	defer ir.PutBuffer(buf)
+	if err := tmplError.ExecuteTemplate(buf, "base", errorData{Message: message}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
@@ -105,9 +108,10 @@ func RenderSuccessWebUI(provider, state string) (string, error) {
 		return "", tmplInitErr
 	}
 
-	var buf bytes.Buffer
+	buf := ir.GetBuffer()
+	defer ir.PutBuffer(buf)
 	data := webUIData{Provider: provider, State: state}
-	if err := tmplSuccessWU.ExecuteTemplate(&buf, "base", data); err != nil {
+	if err := tmplSuccessWU.ExecuteTemplate(buf, "base", data); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
@@ -120,9 +124,10 @@ func RenderErrorWebUI(provider, state, message string) (string, error) {
 		return "", tmplInitErr
 	}
 
-	var buf bytes.Buffer
+	buf := ir.GetBuffer()
+	defer ir.PutBuffer(buf)
 	data := webUIData{Provider: provider, State: state, Message: message}
-	if err := tmplErrorWU.ExecuteTemplate(&buf, "base", data); err != nil {
+	if err := tmplErrorWU.ExecuteTemplate(buf, "base", data); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

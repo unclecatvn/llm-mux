@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"html"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // HTMLSuccess returns a success page for CLI mode.

@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/util"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // reloadClients performs a full scan and reload of all clients.
@@ -31,7 +31,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 	if len(affectedOAuthProviders) > 0 {
 		w.clientsMutex.Lock()
 		if w.currentAuths != nil {
-			filtered := make(map[string]*coreauth.Auth, len(w.currentAuths))
+			filtered := make(map[string]*provider.Auth, len(w.currentAuths))
 			for id, auth := range w.currentAuths {
 				if auth == nil {
 					continue

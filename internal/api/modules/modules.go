@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format"
 	"github.com/nghyane/llm-mux/internal/config"
-	"github.com/nghyane/llm-mux/sdk/api/handlers"
 )
 
 // Context encapsulates the dependencies exposed to routing modules during
@@ -16,7 +16,7 @@ import (
 // authentication middleware for protecting routes that require API keys.
 type Context struct {
 	Engine         *gin.Engine
-	BaseHandler    *handlers.BaseAPIHandler
+	BaseHandler    *format.BaseAPIHandler
 	Config         *config.Config
 	AuthMiddleware gin.HandlerFunc
 }

@@ -20,17 +20,16 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/nghyane/llm-mux/internal/access/config_access"
+	authlogin "github.com/nghyane/llm-mux/internal/auth/login"
 	"github.com/nghyane/llm-mux/internal/buildinfo"
 	"github.com/nghyane/llm-mux/internal/cmd"
 	"github.com/nghyane/llm-mux/internal/config"
-	"github.com/nghyane/llm-mux/internal/embedded"
 	"github.com/nghyane/llm-mux/internal/logging"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/store"
 	"github.com/nghyane/llm-mux/internal/usage"
 	"github.com/nghyane/llm-mux/internal/util"
-	sdkAuth "github.com/nghyane/llm-mux/sdk/auth"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	flag "github.com/spf13/pflag"
 )
 
@@ -318,7 +317,7 @@ func main() {
 			if errDir := os.MkdirAll(filepath.Dir(configFilePath), 0o700); errDir != nil {
 				log.Fatalf("failed to create config directory: %v", errDir)
 			}
-			if errWrite := os.WriteFile(configFilePath, embedded.DefaultConfigTemplate(), 0o600); errWrite != nil {
+			if errWrite := os.WriteFile(configFilePath, config.GenerateDefaultConfigYAML(), 0o600); errWrite != nil {
 				log.Fatalf("failed to write config from template: %v", errWrite)
 			}
 			if errCommit := gitStoreInst.PersistConfig(context.Background()); errCommit != nil {
@@ -343,7 +342,8 @@ func main() {
 		configFilePath = configPath
 
 		// Auto-init on first run: create config from template if using default path and doesn't exist
-		if configPath == expandPath(DefaultConfigPath) {
+		defaultExpanded, _ := util.ResolveAuthDir(DefaultConfigPath)
+		if configPath == defaultExpanded {
 			if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
 				autoInitConfig(configPath)
 			}
@@ -381,7 +381,7 @@ func main() {
 		}
 	}
 
-	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+	provider.SetQuotaCooldownDisabled(cfg.DisableCooling)
 
 	if err = logging.ConfigureLogOutput(cfg.LoggingToFile); err != nil {
 		log.Fatalf("failed to configure log output: %v", err)
@@ -405,13 +405,13 @@ func main() {
 
 	// Register the shared token store once so all components use the same persistence backend.
 	if usePostgresStore {
-		sdkAuth.RegisterTokenStore(pgStoreInst)
+		authlogin.RegisterTokenStore(pgStoreInst)
 	} else if useObjectStore {
-		sdkAuth.RegisterTokenStore(objectStoreInst)
+		authlogin.RegisterTokenStore(objectStoreInst)
 	} else if useGitStore {
-		sdkAuth.RegisterTokenStore(gitStoreInst)
+		authlogin.RegisterTokenStore(gitStoreInst)
 	} else {
-		sdkAuth.RegisterTokenStore(sdkAuth.NewFileTokenStore())
+		authlogin.RegisterTokenStore(authlogin.NewFileTokenStore())
 	}
 
 	// Register built-in access providers before constructing services.
@@ -451,37 +451,6 @@ func main() {
 	}
 }
 
-// expandPath expands $XDG_CONFIG_HOME and ~ to actual paths (XDG-compliant)
-func expandPath(path string) string {
-	// Handle $XDG_CONFIG_HOME prefix
-	if strings.HasPrefix(path, "$XDG_CONFIG_HOME") {
-		xdg := os.Getenv("XDG_CONFIG_HOME")
-		if xdg == "" {
-			// Fallback to ~/.config if XDG_CONFIG_HOME not set
-			if home, err := os.UserHomeDir(); err == nil {
-				xdg = filepath.Join(home, ".config")
-			}
-		}
-		if xdg != "" {
-			remainder := strings.TrimPrefix(path, "$XDG_CONFIG_HOME")
-			remainder = strings.TrimLeft(remainder, "/\\")
-			if remainder == "" {
-				return filepath.Clean(xdg)
-			}
-			normalized := strings.ReplaceAll(remainder, "\\", "/")
-			return filepath.Clean(filepath.Join(xdg, filepath.FromSlash(normalized)))
-		}
-	}
-
-	// Handle ~ prefix (legacy support)
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
-}
-
 // autoInitConfig silently creates config on first run
 func autoInitConfig(configPath string) {
 	dir := filepath.Dir(configPath)
@@ -490,7 +459,7 @@ func autoInitConfig(configPath string) {
 	}
 	authDir := filepath.Join(dir, "auth")
 	_ = os.MkdirAll(authDir, 0o700)
-	if err := os.WriteFile(configPath, embedded.DefaultConfigTemplate(), 0o600); err != nil {
+	if err := os.WriteFile(configPath, config.GenerateDefaultConfigYAML(), 0o600); err != nil {
 		return
 	}
 	fmt.Printf("First run: created config at %s\n", configPath)
@@ -501,7 +470,7 @@ func autoInitConfig(configPath string) {
 // - Credentials missing → create credentials (uses XDG_CONFIG_HOME or ~/.config/llm-mux/)
 // - Both exist → show current key (use --force to regenerate)
 func doInitConfig(configPath string, force bool) {
-	configPath = expandPath(configPath)
+	configPath, _ = util.ResolveAuthDir(configPath)
 	dir := filepath.Dir(configPath)
 	credPath := config.CredentialsFilePath()
 
@@ -516,7 +485,7 @@ func doInitConfig(configPath string, force bool) {
 
 	// Create config if missing
 	if !configExists {
-		if err := os.WriteFile(configPath, embedded.DefaultConfigTemplate(), 0o600); err != nil {
+		if err := os.WriteFile(configPath, config.GenerateDefaultConfigYAML(), 0o600); err != nil {
 			log.Fatalf("Failed to write config: %v", err)
 		}
 		fmt.Printf("Created: %s\n", configPath)

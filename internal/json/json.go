@@ -6,11 +6,28 @@ import (
 	"bytes"
 	stdjson "encoding/json"
 	"io"
+	"sync"
 
 	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/decoder"
 	"github.com/bytedance/sonic/encoder"
 )
+
+// bufferPool provides reusable bytes.Buffer instances for JSON operations.
+var bufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 512))
+	},
+}
+
+func getBuffer() *bytes.Buffer {
+	return bufferPool.Get().(*bytes.Buffer)
+}
+
+func putBuffer(buf *bytes.Buffer) {
+	buf.Reset()
+	bufferPool.Put(buf)
+}
 
 // Marshal returns the JSON encoding of v using sonic.
 func Marshal(v any) ([]byte, error) {
@@ -151,8 +168,9 @@ func (d *Decoder) Buffered() io.Reader {
 
 // Compact appends to dst the JSON-encoded src with insignificant space characters elided.
 func Compact(dst *[]byte, src []byte) error {
-	var buf bytes.Buffer
-	if err := stdjson.Compact(&buf, src); err != nil {
+	buf := getBuffer()
+	defer putBuffer(buf)
+	if err := stdjson.Compact(buf, src); err != nil {
 		return err
 	}
 	*dst = append(*dst, buf.Bytes()...)
@@ -162,15 +180,17 @@ func Compact(dst *[]byte, src []byte) error {
 // HTMLEscape appends to dst the JSON-encoded src with <, >, &, U+2028 and U+2029
 // characters inside string literals changed to \u003c, \u003e, \u0026, \u2028, \u2029.
 func HTMLEscape(dst *[]byte, src []byte) {
-	var buf bytes.Buffer
-	stdjson.HTMLEscape(&buf, src)
+	buf := getBuffer()
+	defer putBuffer(buf)
+	stdjson.HTMLEscape(buf, src)
 	*dst = append(*dst, buf.Bytes()...)
 }
 
 // Indent appends to dst an indented form of the JSON-encoded src.
 func Indent(dst *[]byte, src []byte, prefix, indent string) error {
-	var buf bytes.Buffer
-	if err := stdjson.Indent(&buf, src, prefix, indent); err != nil {
+	buf := getBuffer()
+	defer putBuffer(buf)
+	if err := stdjson.Indent(buf, src, prefix, indent); err != nil {
 		return err
 	}
 	*dst = append(*dst, buf.Bytes()...)

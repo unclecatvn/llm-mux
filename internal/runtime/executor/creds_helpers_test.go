@@ -3,7 +3,7 @@ package executor
 import (
 	"testing"
 
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
+	"github.com/nghyane/llm-mux/internal/provider"
 )
 
 func TestExtractCreds_NilAuth(t *testing.T) {
@@ -14,7 +14,7 @@ func TestExtractCreds_NilAuth(t *testing.T) {
 }
 
 func TestExtractCreds_Claude(t *testing.T) {
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		Attributes: map[string]string{
 			"api_key":  "attr-key",
 			"base_url": "attr-url",
@@ -28,7 +28,7 @@ func TestExtractCreds_Claude(t *testing.T) {
 }
 
 func TestExtractCreds_Claude_MetadataFallback(t *testing.T) {
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		Attributes: map[string]string{
 			"base_url": "attr-url",
 		},
@@ -44,7 +44,7 @@ func TestExtractCreds_Claude_MetadataFallback(t *testing.T) {
 }
 
 func TestExtractCreds_Cline_TokenPrefix(t *testing.T) {
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		Metadata: map[string]any{
 			"access_token": "cline-token",
 		},
@@ -57,7 +57,7 @@ func TestExtractCreds_Cline_TokenPrefix(t *testing.T) {
 }
 
 func TestExtractCreds_Qwen_URLTransform(t *testing.T) {
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		Metadata: map[string]any{
 			"access_token": "qwen-token",
 			"resource_url": "api.qwen.com",
@@ -72,7 +72,7 @@ func TestExtractCreds_Qwen_URLTransform(t *testing.T) {
 }
 
 func TestExtractCreds_IFlow_TrimWhitespace(t *testing.T) {
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		Attributes: map[string]string{
 			"api_key":  "  key-with-spaces  ",
 			"base_url": "  url-with-spaces  ",
@@ -90,7 +90,7 @@ func TestExtractCreds_IFlow_TrimWhitespace(t *testing.T) {
 }
 
 func TestExtractCreds_Gemini_NestedTokenMap(t *testing.T) {
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		Metadata: map[string]any{
 			"token": map[string]any{
 				"access_token": "nested-token",
@@ -105,7 +105,7 @@ func TestExtractCreds_Gemini_NestedTokenMap(t *testing.T) {
 }
 
 func TestExtractCreds_Gemini_Priority(t *testing.T) {
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		Metadata: map[string]any{
 			"access_token": "direct-token",
 			"token": map[string]any{

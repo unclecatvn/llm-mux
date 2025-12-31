@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/access"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format"
 	"github.com/nghyane/llm-mux/internal/api/modules"
 	"github.com/nghyane/llm-mux/internal/config"
-	sdkaccess "github.com/nghyane/llm-mux/sdk/access"
-	"github.com/nghyane/llm-mux/sdk/api/handlers"
 )
 
 func TestAmpModule_Name(t *testing.T) {
@@ -23,7 +23,7 @@ func TestAmpModule_Name(t *testing.T) {
 }
 
 func TestAmpModule_New(t *testing.T) {
-	accessManager := sdkaccess.NewManager()
+	accessManager := access.NewManager()
 	authMiddleware := func(c *gin.Context) { c.Next() }
 
 	m := New(WithAccessManager(accessManager), WithAuthMiddleware(authMiddleware))
@@ -50,8 +50,8 @@ func TestAmpModule_Register_WithUpstream(t *testing.T) {
 	upstream := httptest.NewServer(nil)
 	defer upstream.Close()
 
-	accessManager := sdkaccess.NewManager()
-	base := &handlers.BaseAPIHandler{}
+	accessManager := access.NewManager()
+	base := &format.BaseAPIHandler{}
 
 	m := New(WithAccessManager(accessManager), WithAuthMiddleware(func(c *gin.Context) { c.Next() }))
 
@@ -82,8 +82,8 @@ func TestAmpModule_Register_WithoutUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	accessManager := sdkaccess.NewManager()
-	base := &handlers.BaseAPIHandler{}
+	accessManager := access.NewManager()
+	base := &format.BaseAPIHandler{}
 
 	m := New(WithAccessManager(accessManager), WithAuthMiddleware(func(c *gin.Context) { c.Next() }))
 
@@ -119,8 +119,8 @@ func TestAmpModule_Register_InvalidUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	accessManager := sdkaccess.NewManager()
-	base := &handlers.BaseAPIHandler{}
+	accessManager := access.NewManager()
+	base := &format.BaseAPIHandler{}
 
 	m := New(WithAccessManager(accessManager), WithAuthMiddleware(func(c *gin.Context) { c.Next() }))
 
@@ -243,8 +243,8 @@ func TestAmpModule_SecretSource_FromConfig(t *testing.T) {
 	upstream := httptest.NewServer(nil)
 	defer upstream.Close()
 
-	accessManager := sdkaccess.NewManager()
-	base := &handlers.BaseAPIHandler{}
+	accessManager := access.NewManager()
+	base := &format.BaseAPIHandler{}
 
 	m := New(WithAccessManager(accessManager), WithAuthMiddleware(func(c *gin.Context) { c.Next() }))
 
@@ -290,8 +290,8 @@ func TestAmpModule_ProviderAliasesAlwaysRegistered(t *testing.T) {
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
 			r := gin.New()
-			accessManager := sdkaccess.NewManager()
-			base := &handlers.BaseAPIHandler{}
+			accessManager := access.NewManager()
+			base := &format.BaseAPIHandler{}
 
 			m := New(WithAccessManager(accessManager), WithAuthMiddleware(func(c *gin.Context) { c.Next() }))
 

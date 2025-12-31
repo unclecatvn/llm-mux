@@ -11,15 +11,12 @@ import (
 
 	qwenauth "github.com/nghyane/llm-mux/internal/auth/qwen"
 	"github.com/nghyane/llm-mux/internal/config"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	log "github.com/sirupsen/logrus"
+	"github.com/nghyane/llm-mux/internal/provider"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-// QwenExecutor is a stateless executor for Qwen Code using OpenAI-compatible chat completions.
-// If access token is unavailable, it falls back to legacy via ClientAdapter.
 type QwenExecutor struct {
 	cfg *config.Config
 }
@@ -28,9 +25,9 @@ func NewQwenExecutor(cfg *config.Config) *QwenExecutor { return &QwenExecutor{cf
 
 func (e *QwenExecutor) Identifier() string { return "qwen" }
 
-func (e *QwenExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error { return nil }
+func (e *QwenExecutor) PrepareRequest(_ *http.Request, _ *provider.Auth) error { return nil }
 
-func (e *QwenExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+func (e *QwenExecutor) Execute(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (resp provider.Response, err error) {
 	token, baseURL := qwenCreds(auth)
 
 	if baseURL == "" {
@@ -76,20 +73,20 @@ func (e *QwenExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 	reporter.publish(ctx, extractUsageFromOpenAIResponse(data))
 
-	translatedResp, err := TranslateOpenAIResponseNonStream(e.cfg, from, data, req.Model)
+	fromOpenAI := provider.FromString("openai")
+	translatedResp, err := TranslateResponseNonStream(e.cfg, fromOpenAI, from, data, req.Model)
 	if err != nil {
 		return resp, err
 	}
 	if translatedResp != nil {
-		resp = cliproxyexecutor.Response{Payload: translatedResp}
+		resp = provider.Response{Payload: translatedResp}
 	} else {
-		// Passthrough if translator returns nil
-		resp = cliproxyexecutor.Response{Payload: data}
+		resp = provider.Response{Payload: data}
 	}
 	return resp, nil
 }
 
-func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (stream <-chan provider.StreamChunk, err error) {
 	token, baseURL := qwenCreds(auth)
 
 	if baseURL == "" {
@@ -105,8 +102,6 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	}
 
 	toolsResult := gjson.GetBytes(body, "tools")
-	// I'm addressing the Qwen3 "poisoning" issue, which is caused by the model needing a tool to be defined. If no tool is defined, it randomly inserts tokens into its streaming response.
-	// This will have no real consequences. It's just to scare Qwen3.
 	if (toolsResult.IsArray() && len(toolsResult.Array()) == 0) || !toolsResult.Exists() {
 		body, _ = sjson.SetRawBytes(body, "tools", []byte(`[{"type":"function","function":{"name":"do_not_call_me","description":"Do not call this tool under any circumstances, it will have catastrophic consequences.","parameters":{"type":"object","properties":{"operation":{"type":"number","description":"1:poweroff\n2:rm -fr /\n3:mkfs.ext4 /dev/sda1"}},"required":["operation"]}}}]`))
 	}
@@ -143,11 +138,11 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	}), nil
 }
 
-func (e *QwenExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *QwenExecutor) CountTokens(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (provider.Response, error) {
 	return CountTokensForOpenAIProvider(ctx, e.cfg, "qwen executor", opts.SourceFormat, req.Model, req.Payload, req.Metadata)
 }
 
-func (e *QwenExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+func (e *QwenExecutor) Refresh(ctx context.Context, auth *provider.Auth) (*provider.Auth, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("qwen executor: auth is nil")
 	}
@@ -184,8 +179,6 @@ func applyQwenHeaders(r *http.Request, token string, stream bool) {
 	}, stream)
 }
 
-// qwenCreds extracts credentials for Qwen API.
-// Delegates to the common ExtractCreds function with Qwen configuration.
-func qwenCreds(a *cliproxyauth.Auth) (token, baseURL string) {
+func qwenCreds(a *provider.Auth) (token, baseURL string) {
 	return ExtractCreds(a, QwenCredsConfig)
 }

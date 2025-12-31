@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/runtime/geminicli"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
 )
 
 func computeProviderModelsHash(models []config.ProviderModel) string {
@@ -27,7 +27,7 @@ func computeProviderModelsHash(models []config.ProviderModel) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func createProviderAuth(idGen *stableIDGenerator, providerName, label, key, baseURL, proxyURL string, headers map[string]string, models []config.ProviderModel, excludedModels []string, cfg *config.Config, now time.Time) *coreauth.Auth {
+func createProviderAuth(idGen *stableIDGenerator, providerName, label, key, baseURL, proxyURL string, headers map[string]string, models []config.ProviderModel, excludedModels []string, cfg *config.Config, now time.Time) *provider.Auth {
 	idKind := fmt.Sprintf("%s:apikey", providerName)
 	id, token := idGen.next(idKind, key, baseURL, proxyURL)
 	attrs := map[string]string{
@@ -41,11 +41,11 @@ func createProviderAuth(idGen *stableIDGenerator, providerName, label, key, base
 		attrs["models_hash"] = hash
 	}
 	addConfigHeadersToAttrs(headers, attrs)
-	a := &coreauth.Auth{
+	a := &provider.Auth{
 		ID:         id,
 		Provider:   providerName,
 		Label:      label,
-		Status:     coreauth.StatusActive,
+		Status:     provider.StatusActive,
 		ProxyURL:   proxyURL,
 		Attributes: attrs,
 		CreatedAt:  now,
@@ -56,8 +56,8 @@ func createProviderAuth(idGen *stableIDGenerator, providerName, label, key, base
 }
 
 // SnapshotCoreAuths converts current clients snapshot into core auth entries.
-func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
-	out := make([]*coreauth.Auth, 0, 32)
+func (w *Watcher) SnapshotCoreAuths() []*provider.Auth {
+	out := make([]*provider.Auth, 0, 32)
 	now := time.Now()
 	idGen := newStableIDGenerator()
 	// Synthesize auth entries from cfg.Providers
@@ -65,9 +65,9 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 	cfg := w.config
 	w.clientsMutex.RUnlock()
 	if cfg != nil {
-		for _, provider := range cfg.Providers {
+		for _, prov := range cfg.Providers {
 			var pName, lbl string
-			switch provider.Type {
+			switch prov.Type {
 			case config.ProviderTypeGemini:
 				pName = "gemini"
 				lbl = "gemini-apikey"
@@ -75,7 +75,7 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 				pName = "claude"
 				lbl = "claude-apikey"
 			case config.ProviderTypeOpenAI:
-				displayName := provider.GetDisplayName()
+				displayName := prov.GetDisplayName()
 				pName = strings.ToLower(displayName)
 				lbl = displayName
 			case config.ProviderTypeVertexCompat:
@@ -84,16 +84,16 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 			default:
 				continue
 			}
-			for _, apiKey := range provider.GetAPIKeys() {
+			for _, apiKey := range prov.GetAPIKeys() {
 				key := strings.TrimSpace(apiKey.Key)
 				if key == "" {
 					continue
 				}
 				proxy := strings.TrimSpace(apiKey.ProxyURL)
 				if proxy == "" {
-					proxy = strings.TrimSpace(provider.ProxyURL)
+					proxy = strings.TrimSpace(prov.ProxyURL)
 				}
-				auth := createProviderAuth(idGen, pName, lbl, key, strings.TrimSpace(provider.BaseURL), proxy, provider.Headers, provider.Models, provider.ExcludedModels, cfg, now)
+				auth := createProviderAuth(idGen, pName, lbl, key, strings.TrimSpace(prov.BaseURL), proxy, prov.Headers, prov.Models, prov.ExcludedModels, cfg, now)
 				out = append(out, auth)
 			}
 		}
@@ -122,11 +122,11 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 		if t == "" {
 			continue
 		}
-		provider := strings.ToLower(t)
-		if provider == "gemini" {
-			provider = "gemini-cli"
+		prov := strings.ToLower(t)
+		if prov == "gemini" {
+			prov = "gemini-cli"
 		}
-		label := provider
+		label := prov
 		if email, _ := metadata["email"].(string); email != "" {
 			label = email
 		}
@@ -141,11 +141,11 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 			proxyURL = p
 		}
 
-		a := &coreauth.Auth{
+		a := &provider.Auth{
 			ID:       id,
-			Provider: provider,
+			Provider: prov,
 			Label:    label,
-			Status:   coreauth.StatusActive,
+			Status:   provider.StatusActive,
 			Attributes: map[string]string{
 				"source": full,
 				"path":   full,
@@ -156,7 +156,7 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 			UpdatedAt: now,
 		}
 		applyAuthExcludedModelsMeta(a, cfg, nil, "oauth")
-		if provider == "gemini-cli" {
+		if prov == "gemini-cli" {
 			if virtuals := synthesizeGeminiVirtualAuths(a, metadata, now); len(virtuals) > 0 {
 				for _, v := range virtuals {
 					applyAuthExcludedModelsMeta(v, cfg, nil, "oauth")
@@ -171,7 +171,7 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 	return out
 }
 
-func synthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]any, now time.Time) []*coreauth.Auth {
+func synthesizeGeminiVirtualAuths(primary *provider.Auth, metadata map[string]any, now time.Time) []*provider.Auth {
 	if primary == nil || metadata == nil {
 		return nil
 	}
@@ -182,7 +182,7 @@ func synthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 	email, _ := metadata["email"].(string)
 	shared := geminicli.NewSharedCredential(primary.ID, email, metadata, projects)
 	primary.Disabled = true
-	primary.Status = coreauth.StatusDisabled
+	primary.Status = provider.StatusDisabled
 	primary.Runtime = shared
 	if primary.Attributes == nil {
 		primary.Attributes = make(map[string]string)
@@ -199,7 +199,7 @@ func synthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 	if label == "" {
 		label = originalProvider
 	}
-	virtuals := make([]*coreauth.Auth, 0, len(projects))
+	virtuals := make([]*provider.Auth, 0, len(projects))
 	for _, projectID := range projects {
 		attrs := map[string]string{
 			"runtime_only":           "true",
@@ -223,11 +223,11 @@ func synthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		if proxy != "" {
 			metadataCopy["proxy_url"] = proxy
 		}
-		virtual := &coreauth.Auth{
+		virtual := &provider.Auth{
 			ID:         buildGeminiVirtualID(primary.ID, projectID),
 			Provider:   originalProvider,
 			Label:      fmt.Sprintf("%s [%s]", label, projectID),
-			Status:     coreauth.StatusActive,
+			Status:     provider.StatusActive,
 			Attributes: attrs,
 			Metadata:   metadataCopy,
 			ProxyURL:   primary.ProxyURL,

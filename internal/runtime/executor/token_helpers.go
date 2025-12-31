@@ -6,13 +6,11 @@ import (
 	"strings"
 
 	"github.com/nghyane/llm-mux/internal/config"
-	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/tidwall/gjson"
 	"github.com/tiktoken-go/tokenizer"
 )
 
-// tokenizerForModel returns a tokenizer codec suitable for an OpenAI-style model id.
 func tokenizerForModel(model string) (tokenizer.Codec, error) {
 	sanitized := strings.ToLower(strings.TrimSpace(model))
 	switch {
@@ -41,7 +39,6 @@ func tokenizerForModel(model string) (tokenizer.Codec, error) {
 	}
 }
 
-// countOpenAIChatTokens approximates prompt tokens for OpenAI chat completions payloads.
 func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	if enc == nil {
 		return 0, fmt.Errorf("encoder is nil")
@@ -73,7 +70,6 @@ func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	return int64(count), nil
 }
 
-// buildOpenAIUsageJSON returns a minimal usage structure understood by downstream translators.
 func buildOpenAIUsageJSON(count int64) []byte {
 	return []byte(fmt.Sprintf(`{"usage":{"prompt_tokens":%d,"completion_tokens":0,"total_tokens":%d}}`, count, count))
 }
@@ -239,34 +235,20 @@ func addIfNotEmpty(segments *[]string, value string) {
 	}
 }
 
-// CountTokensForOpenAIProvider provides common token counting for OpenAI-compatible providers.
-// It handles translation, model extraction, tokenizer initialization, and response formatting.
-//
-// Parameters:
-//   - ctx: Context for cancellation and translation
-//   - cfg: Config for translation settings
-//   - executorName: Name for error messages (e.g., "qwen executor")
-//   - from: Source format for translation
-//   - model: Model name to use for tokenizer (fallback if not in body)
-//   - payload: Original request payload
-//   - metadata: Optional metadata for translation (can be nil)
-//
-// Returns a Response with translated token count or an error.
 func CountTokensForOpenAIProvider(
 	ctx context.Context,
 	cfg *config.Config,
 	executorName string,
-	from sdktranslator.Format,
+	from provider.Format,
 	model string,
 	payload []byte,
 	metadata map[string]any,
-) (cliproxyexecutor.Response, error) {
+) (provider.Response, error) {
 	body, err := TranslateToOpenAI(cfg, from, model, payload, false, metadata)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 
-	// Extract model from body if available, fallback to provided model
 	modelName := gjson.GetBytes(body, "model").String()
 	if strings.TrimSpace(modelName) == "" {
 		modelName = model
@@ -274,15 +256,14 @@ func CountTokensForOpenAIProvider(
 
 	enc, err := tokenizerForModel(modelName)
 	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("%s: tokenizer init failed: %w", executorName, err)
+		return provider.Response{}, fmt.Errorf("%s: tokenizer init failed: %w", executorName, err)
 	}
 
 	count, err := countOpenAIChatTokens(enc, body)
 	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("%s: token counting failed: %w", executorName, err)
+		return provider.Response{}, fmt.Errorf("%s: token counting failed: %w", executorName, err)
 	}
 
 	usageJSON := buildOpenAIUsageJSON(count)
-	translated := sdktranslator.TranslateTokenCount(ctx, formatOpenAI, from, count, usageJSON)
-	return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
+	return provider.Response{Payload: usageJSON}, nil
 }

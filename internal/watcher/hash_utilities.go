@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/nghyane/llm-mux/internal/config"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
+	"github.com/nghyane/llm-mux/internal/provider"
 )
 
 func computeVertexCompatModelsHash(models []config.VertexCompatModel) string {
@@ -164,11 +164,11 @@ func diffOAuthExcludedModelChanges(oldMap, newMap map[string][]string) ([]string
 	return changes, affected
 }
 
-func authEqual(a, b *coreauth.Auth) bool {
+func authEqual(a, b *provider.Auth) bool {
 	return reflect.DeepEqual(normalizeAuth(a), normalizeAuth(b))
 }
 
-func normalizeAuth(a *coreauth.Auth) *coreauth.Auth {
+func normalizeAuth(a *provider.Auth) *provider.Auth {
 	if a == nil {
 		return nil
 	}
@@ -182,7 +182,7 @@ func normalizeAuth(a *coreauth.Auth) *coreauth.Auth {
 	return clone
 }
 
-func applyAuthExcludedModelsMeta(auth *coreauth.Auth, cfg *config.Config, perKey []string, authKind string) {
+func applyAuthExcludedModelsMeta(auth *provider.Auth, cfg *config.Config, perKey []string, authKind string) {
 	if auth == nil || cfg == nil {
 		return
 	}

@@ -13,12 +13,11 @@ import (
 	codexauth "github.com/nghyane/llm-mux/internal/auth/codex"
 	"github.com/nghyane/llm-mux/internal/config"
 	"github.com/nghyane/llm-mux/internal/misc"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/translator/ir"
+	"github.com/nghyane/llm-mux/internal/translator/to_ir"
 	"github.com/nghyane/llm-mux/internal/util"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/tiktoken-go/tokenizer"
@@ -27,8 +26,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
-// If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type CodexExecutor struct {
 	cfg *config.Config
 }
@@ -37,9 +34,9 @@ func NewCodexExecutor(cfg *config.Config) *CodexExecutor { return &CodexExecutor
 
 func (e *CodexExecutor) Identifier() string { return "codex" }
 
-func (e *CodexExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error { return nil }
+func (e *CodexExecutor) PrepareRequest(_ *http.Request, _ *provider.Auth) error { return nil }
 
-func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+func (e *CodexExecutor) Execute(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (resp provider.Response, err error) {
 	apiKey, baseURL := codexCreds(auth)
 
 	if baseURL == "" {
@@ -55,7 +52,6 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 
 	body = e.setReasoningEffortByAlias(req.Model, body)
-
 	body = applyPayloadConfig(e.cfg, req.Model, body)
 
 	body, _ = sjson.SetBytes(body, "stream", true)
@@ -104,15 +100,15 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			reporter.publish(ctx, detail)
 		}
 
-		translatedResp, err := TranslateCodexResponseNonStream(e.cfg, from, line, req.Model)
+		fromFormat := provider.FromString("codex")
+		translatedResp, err := TranslateResponseNonStream(e.cfg, fromFormat, from, line, req.Model)
 		if err != nil {
 			return resp, err
 		}
 		if translatedResp != nil {
-			resp = cliproxyexecutor.Response{Payload: translatedResp}
+			resp = provider.Response{Payload: translatedResp}
 		} else {
-			// Passthrough if translator returns nil
-			resp = cliproxyexecutor.Response{Payload: line}
+			resp = provider.Response{Payload: line}
 		}
 		return resp, nil
 	}
@@ -120,7 +116,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	return resp, err
 }
 
-func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (stream <-chan provider.StreamChunk, err error) {
 	apiKey, baseURL := codexCreds(auth)
 
 	if baseURL == "" {
@@ -162,67 +158,52 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		if readErr != nil {
 			return nil, readErr
 		}
-		// Codex uses categorized error for consistency
 		log.Debugf("codex executor: error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		return nil, NewStatusError(httpResp.StatusCode, string(data), nil)
 	}
 
-	// Create stream processor for Codex
 	messageID := "resp-" + req.Model
+	streamCtx := NewStreamContext()
+	translator := NewStreamTranslator(e.cfg, from, from.String(), req.Model, messageID, streamCtx)
 	processor := &codexStreamProcessor{
-		cfg:       e.cfg,
-		from:      from,
-		model:     req.Model,
-		messageID: messageID,
+		translator: translator,
 	}
 
-	// Use RunSSEStream for unified streaming with buffer pooling
 	return RunSSEStream(ctx, httpResp.Body, reporter, processor, StreamConfig{
 		ExecutorName:   "codex",
 		SkipEmptyLines: true,
 	}), nil
 }
 
-// codexStreamProcessor implements StreamProcessor for Codex SSE streams.
 type codexStreamProcessor struct {
-	cfg       *config.Config
-	from      sdktranslator.Format
-	model     string
-	messageID string
-	state     *CodexStreamState
+	translator *StreamTranslator
 }
 
-// ProcessLine processes a single SSE line from Codex.
 func (p *codexStreamProcessor) ProcessLine(line []byte) ([][]byte, *ir.Usage, error) {
-	var usage *ir.Usage
-
-	// Extract usage from response.completed events
-	if bytes.HasPrefix(line, dataTag) {
-		data := bytes.TrimSpace(line[len(dataTag):])
-		if gjson.GetBytes(data, "type").String() == "response.completed" {
-			usage = extractUsageFromOpenAIResponse(data)
-		}
-	}
-
-	// Translate the line
-	chunks, err := TranslateCodexResponseStream(p.cfg, p.from, line, p.model, p.messageID, p.state)
+	events, err := to_ir.ParseOpenAIChunk(line)
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(events) == 0 {
+		return nil, nil, nil
+	}
 
-	return chunks, usage, nil
+	result, err := p.translator.Translate(events)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result.Chunks, result.Usage, nil
 }
 
-// ProcessDone handles the [DONE] signal (no-op for Codex).
 func (p *codexStreamProcessor) ProcessDone() ([][]byte, error) {
-	return nil, nil
+	return p.translator.Flush(), nil
 }
 
-func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *CodexExecutor) CountTokens(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (provider.Response, error) {
 	from := opts.SourceFormat
 	body, err := TranslateToCodex(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 
 	modelForCounting := req.Model
@@ -234,28 +215,23 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 
 	enc, err := tokenizerForCodexModel(modelForCounting)
 	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("codex executor: tokenizer init failed: %w", err)
+		return provider.Response{}, fmt.Errorf("codex executor: tokenizer init failed: %w", err)
 	}
 
 	count, err := countCodexInputTokens(enc, body)
 	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("codex executor: token counting failed: %w", err)
+		return provider.Response{}, fmt.Errorf("codex executor: token counting failed: %w", err)
 	}
 
 	usageJSON := fmt.Sprintf(`{"response":{"usage":{"input_tokens":%d,"output_tokens":0,"total_tokens":%d}}}`, count, count)
-	to := formatCodex
-	translated := sdktranslator.TranslateTokenCount(ctx, to, from, count, []byte(usageJSON))
-	return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
+	return provider.Response{Payload: []byte(usageJSON)}, nil
 }
 
-// reasoningModelConfig defines model aliases and their reasoning settings.
 type reasoningModelConfig struct {
-	BaseModel string            // The upstream model name
-	Efforts   map[string]string // alias -> effort level mapping (empty string = no effort override)
+	BaseModel string
+	Efforts   map[string]string
 }
 
-// codexReasoningConfigs maps model aliases to their base model and reasoning effort.
-// To add a new model or alias, simply add a new entry to this slice.
 var codexReasoningConfigs = []reasoningModelConfig{
 	{
 		BaseModel: "gpt-5",
@@ -464,7 +440,7 @@ func countCodexInputTokens(enc tokenizer.Codec, body []byte) (int64, error) {
 	return int64(count), nil
 }
 
-func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+func (e *CodexExecutor) Refresh(ctx context.Context, auth *provider.Auth) (*provider.Auth, error) {
 	if auth == nil {
 		return nil, NewStatusError(500, "codex executor: auth is nil", nil)
 	}
@@ -494,7 +470,6 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 		auth.Metadata["account_id"] = td.AccountID
 	}
 	auth.Metadata["email"] = td.Email
-	// Use unified key in files
 	auth.Metadata["expired"] = td.Expire
 	auth.Metadata["type"] = "codex"
 	now := time.Now().Format(time.RFC3339)
@@ -502,7 +477,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
-func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
+func (e *CodexExecutor) cacheHelper(ctx context.Context, from provider.Format, url string, req provider.Request, rawJSON []byte) (*http.Request, error) {
 	var cache codexCache
 	if from == "claude" {
 		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
@@ -534,7 +509,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	return httpReq, nil
 }
 
-func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string) {
+func applyCodexHeaders(r *http.Request, auth *provider.Auth, token string) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
 
@@ -552,17 +527,15 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string) {
 	r.Header.Set("Connection", "Keep-Alive")
 
 	isAPIKey := false
-	if auth != nil && auth.Attributes != nil {
-		if v := strings.TrimSpace(auth.Attributes["api_key"]); v != "" {
+	if auth != nil {
+		if v := AttrStringValue(auth.Attributes, "api_key"); v != "" {
 			isAPIKey = true
 		}
 	}
 	if !isAPIKey {
 		r.Header.Set("Originator", "codex_cli_rs")
-		if auth != nil && auth.Metadata != nil {
-			if accountID, ok := auth.Metadata["account_id"].(string); ok {
-				r.Header.Set("Chatgpt-Account-Id", accountID)
-			}
+		if accountID := MetaStringValue(auth.Metadata, "account_id"); accountID != "" {
+			r.Header.Set("Chatgpt-Account-Id", accountID)
 		}
 	}
 	var attrs map[string]string
@@ -572,8 +545,6 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string) {
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
 }
 
-// codexCreds extracts credentials for Codex API.
-// Delegates to the common ExtractCreds function with Codex configuration.
-func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+func codexCreds(a *provider.Auth) (apiKey, baseURL string) {
 	return ExtractCreds(a, CodexCredsConfig)
 }

@@ -9,10 +9,10 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/access"
 	"github.com/nghyane/llm-mux/internal/api/modules"
 	"github.com/nghyane/llm-mux/internal/config"
-	sdkaccess "github.com/nghyane/llm-mux/sdk/access"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // Option configures the AmpModule.
@@ -28,7 +28,7 @@ type AmpModule struct {
 	secretSource    SecretSource
 	proxy           *httputil.ReverseProxy
 	proxyMu         sync.RWMutex // protects proxy for hot-reload
-	accessManager   *sdkaccess.Manager
+	accessManager   *access.Manager
 	authMiddleware_ gin.HandlerFunc
 	modelMapper     *DefaultModelMapper
 	enabled         bool
@@ -70,7 +70,7 @@ func WithSecretSource(source SecretSource) Option {
 }
 
 // WithAccessManager sets the access manager for the module.
-func WithAccessManager(am *sdkaccess.Manager) Option {
+func WithAccessManager(am *access.Manager) Option {
 	return func(m *AmpModule) {
 		m.accessManager = am
 	}

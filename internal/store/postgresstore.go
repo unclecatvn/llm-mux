@@ -15,9 +15,9 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/nghyane/llm-mux/internal/embedded"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 const (
@@ -187,7 +187,7 @@ func (s *PostgresStore) WorkDir() string {
 func (s *PostgresStore) SetBaseDir(string) {}
 
 // Save persists authentication metadata to disk and PostgreSQL.
-func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
+func (s *PostgresStore) Save(ctx context.Context, auth *provider.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("postgres store: auth is nil")
 	}
@@ -262,7 +262,7 @@ func (s *PostgresStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (stri
 }
 
 // List enumerates all auth records stored in PostgreSQL.
-func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) {
+func (s *PostgresStore) List(ctx context.Context) ([]*provider.Auth, error) {
 	query := fmt.Sprintf("SELECT id, content, created_at, updated_at FROM %s ORDER BY id", s.fullTableName(s.cfg.AuthTable))
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -270,7 +270,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 	}
 	defer rows.Close()
 
-	auths := make([]*cliproxyauth.Auth, 0, 32)
+	auths := make([]*provider.Auth, 0, 32)
 	for rows.Next() {
 		var (
 			id        string
@@ -291,20 +291,20 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			log.WithError(err).Warnf("postgres store: skipping auth %s with invalid json", id)
 			continue
 		}
-		provider := strings.TrimSpace(valueAsString(metadata["type"]))
-		if provider == "" {
-			provider = "unknown"
+		providerName := strings.TrimSpace(valueAsString(metadata["type"]))
+		if providerName == "" {
+			providerName = "unknown"
 		}
 		attr := map[string]string{"path": path}
 		if email := strings.TrimSpace(valueAsString(metadata["email"])); email != "" {
 			attr["email"] = email
 		}
-		auth := &cliproxyauth.Auth{
+		auth := &provider.Auth{
 			ID:               normalizeAuthID(id),
-			Provider:         provider,
+			Provider:         providerName,
 			FileName:         normalizeAuthID(id),
 			Label:            labelFor(metadata),
-			Status:           cliproxyauth.StatusActive,
+			Status:           provider.StatusActive,
 			Attributes:       attr,
 			Metadata:         metadata,
 			CreatedAt:        createdAt,
@@ -404,7 +404,7 @@ func (s *PostgresStore) syncConfigFromDatabase(ctx context.Context) error {
 			if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
 				return fmt.Errorf("postgres store: prepare config directory: %w", errCreate)
 			}
-			if errWrite := os.WriteFile(s.configPath, embedded.DefaultConfigTemplate(), 0o600); errWrite != nil {
+			if errWrite := os.WriteFile(s.configPath, config.GenerateDefaultConfigYAML(), 0o600); errWrite != nil {
 				return fmt.Errorf("postgres store: write config from template: %w", errWrite)
 			}
 		}
@@ -540,7 +540,7 @@ func (s *PostgresStore) deleteConfigRecord(ctx context.Context) error {
 	return nil
 }
 
-func (s *PostgresStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
+func (s *PostgresStore) resolveAuthPath(auth *provider.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("postgres store: auth is nil")
 	}

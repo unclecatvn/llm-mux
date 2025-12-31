@@ -1,11 +1,12 @@
 package util
 
 import (
-	"bytes"
 	"encoding/base64"
 	"image"
 	"image/draw"
 	"image/png"
+
+	"github.com/nghyane/llm-mux/internal/translator/ir"
 )
 
 func CreateWhiteImageBase64(aspectRatio string) (string, error) {
@@ -48,9 +49,10 @@ func CreateWhiteImageBase64(aspectRatio string) (string, error) {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(img, img.Bounds(), image.White, image.Point{}, draw.Src)
 
-	var buf bytes.Buffer
+	buf := ir.GetBuffer()
+	defer ir.PutBuffer(buf)
 
-	if err := png.Encode(&buf, img); err != nil {
+	if err := png.Encode(buf, img); err != nil {
 		return "", err
 	}
 

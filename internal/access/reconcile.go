@@ -7,21 +7,19 @@ import (
 	"strings"
 
 	"github.com/nghyane/llm-mux/internal/config"
-	sdkaccess "github.com/nghyane/llm-mux/sdk/access"
-	sdkConfig "github.com/nghyane/llm-mux/sdk/config"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // ReconcileProviders builds the desired provider list by reusing existing providers when possible
 // and creating or removing providers only when their configuration changed. It returns the final
 // ordered provider slice along with the identifiers of providers that were added, updated, or
 // removed compared to the previous configuration.
-func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Provider) (result []sdkaccess.Provider, added, updated, removed []string, err error) {
+func ReconcileProviders(oldCfg, newCfg *config.Config, existing []Provider) (result []Provider, added, updated, removed []string, err error) {
 	if newCfg == nil {
 		return nil, nil, nil, nil, nil
 	}
 
-	existingMap := make(map[string]sdkaccess.Provider, len(existing))
+	existingMap := make(map[string]Provider, len(existing))
 	for _, provider := range existing {
 		if provider == nil {
 			continue
@@ -32,11 +30,11 @@ func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Prov
 	oldCfgMap := accessProviderMap(oldCfg)
 	newEntries := collectProviderEntries(newCfg)
 
-	result = make([]sdkaccess.Provider, 0, len(newEntries))
+	result = make([]Provider, 0, len(newEntries))
 	finalIDs := make(map[string]struct{}, len(newEntries))
 
 	isInlineProvider := func(id string) bool {
-		return strings.EqualFold(id, sdkConfig.DefaultAccessProviderName)
+		return strings.EqualFold(id, config.DefaultAccessProviderName)
 	}
 	appendChange := func(list *[]string, id string) {
 		if isInlineProvider(id) {
@@ -51,7 +49,7 @@ func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Prov
 			continue
 		}
 
-		forceRebuild := strings.EqualFold(strings.TrimSpace(providerCfg.Type), sdkConfig.AccessProviderTypeConfigAPIKey)
+		forceRebuild := strings.EqualFold(strings.TrimSpace(providerCfg.Type), config.AccessProviderTypeConfigAPIKey)
 		if oldCfgProvider, ok := oldCfgMap[key]; ok {
 			isAliased := oldCfgProvider == providerCfg
 			if !forceRebuild && !isAliased && providerConfigEqual(oldCfgProvider, providerCfg) {
@@ -63,7 +61,7 @@ func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Prov
 			}
 		}
 
-		provider, buildErr := sdkaccess.BuildProvider(providerCfg, &newCfg.SDKConfig)
+		provider, buildErr := BuildProvider(providerCfg, &newCfg.SDKConfig)
 		if buildErr != nil {
 			return nil, nil, nil, nil, buildErr
 		}
@@ -81,7 +79,7 @@ func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Prov
 	}
 
 	if len(result) == 0 {
-		if inline := sdkConfig.MakeInlineAPIKeyProvider(newCfg.APIKeys); inline != nil {
+		if inline := config.MakeInlineAPIKeyProvider(newCfg.APIKeys); inline != nil {
 			key := providerIdentifier(inline)
 			if key != "" {
 				if oldCfgProvider, ok := oldCfgMap[key]; ok {
@@ -93,7 +91,7 @@ func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Prov
 						}
 					}
 				}
-				provider, buildErr := sdkaccess.BuildProvider(inline, &newCfg.SDKConfig)
+				provider, buildErr := BuildProvider(inline, &newCfg.SDKConfig)
 				if buildErr != nil {
 					return nil, nil, nil, nil, buildErr
 				}
@@ -136,7 +134,7 @@ func ReconcileProviders(oldCfg, newCfg *config.Config, existing []sdkaccess.Prov
 // ApplyAccessProviders reconciles the configured access providers against the
 // currently registered providers and updates the manager. It logs a concise
 // summary of the detected changes and returns whether any provider changed.
-func ApplyAccessProviders(manager *sdkaccess.Manager, oldCfg, newCfg *config.Config) (bool, error) {
+func ApplyAccessProviders(manager *Manager, oldCfg, newCfg *config.Config) (bool, error) {
 	if manager == nil || newCfg == nil {
 		return false, nil
 	}
@@ -160,8 +158,8 @@ func ApplyAccessProviders(manager *sdkaccess.Manager, oldCfg, newCfg *config.Con
 	return false, nil
 }
 
-func accessProviderMap(cfg *config.Config) map[string]*sdkConfig.AccessProvider {
-	result := make(map[string]*sdkConfig.AccessProvider)
+func accessProviderMap(cfg *config.Config) map[string]*config.AccessProvider {
+	result := make(map[string]*config.AccessProvider)
 	if cfg == nil {
 		return result
 	}
@@ -177,7 +175,7 @@ func accessProviderMap(cfg *config.Config) map[string]*sdkConfig.AccessProvider 
 		result[key] = providerCfg
 	}
 	if len(result) == 0 && len(cfg.APIKeys) > 0 {
-		if provider := sdkConfig.MakeInlineAPIKeyProvider(cfg.APIKeys); provider != nil {
+		if provider := config.MakeInlineAPIKeyProvider(cfg.APIKeys); provider != nil {
 			if key := providerIdentifier(provider); key != "" {
 				result[key] = provider
 			}
@@ -186,8 +184,8 @@ func accessProviderMap(cfg *config.Config) map[string]*sdkConfig.AccessProvider 
 	return result
 }
 
-func collectProviderEntries(cfg *config.Config) []*sdkConfig.AccessProvider {
-	entries := make([]*sdkConfig.AccessProvider, 0, len(cfg.Access.Providers))
+func collectProviderEntries(cfg *config.Config) []*config.AccessProvider {
+	entries := make([]*config.AccessProvider, 0, len(cfg.Access.Providers))
 	for i := range cfg.Access.Providers {
 		providerCfg := &cfg.Access.Providers[i]
 		if providerCfg.Type == "" {
@@ -198,14 +196,14 @@ func collectProviderEntries(cfg *config.Config) []*sdkConfig.AccessProvider {
 		}
 	}
 	if len(entries) == 0 && len(cfg.APIKeys) > 0 {
-		if inline := sdkConfig.MakeInlineAPIKeyProvider(cfg.APIKeys); inline != nil {
+		if inline := config.MakeInlineAPIKeyProvider(cfg.APIKeys); inline != nil {
 			entries = append(entries, inline)
 		}
 	}
 	return entries
 }
 
-func providerIdentifier(provider *sdkConfig.AccessProvider) string {
+func providerIdentifier(provider *config.AccessProvider) string {
 	if provider == nil {
 		return ""
 	}
@@ -216,13 +214,13 @@ func providerIdentifier(provider *sdkConfig.AccessProvider) string {
 	if typ == "" {
 		return ""
 	}
-	if strings.EqualFold(typ, sdkConfig.AccessProviderTypeConfigAPIKey) {
-		return sdkConfig.DefaultAccessProviderName
+	if strings.EqualFold(typ, config.AccessProviderTypeConfigAPIKey) {
+		return config.DefaultAccessProviderName
 	}
 	return typ
 }
 
-func providerConfigEqual(a, b *sdkConfig.AccessProvider) bool {
+func providerConfigEqual(a, b *config.AccessProvider) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}

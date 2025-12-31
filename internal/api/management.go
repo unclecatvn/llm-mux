@@ -2,7 +2,7 @@
 package api
 
 import (
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // registerManagementRoutes sets up all management API routes.

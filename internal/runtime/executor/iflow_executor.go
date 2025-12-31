@@ -12,30 +12,24 @@ import (
 
 	iflowauth "github.com/nghyane/llm-mux/internal/auth/iflow"
 	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/util"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-// IFlowExecutor executes OpenAI-compatible chat completions against the iFlow API using API keys derived from OAuth.
 type IFlowExecutor struct {
 	cfg *config.Config
 }
 
-// NewIFlowExecutor constructs a new executor instance.
 func NewIFlowExecutor(cfg *config.Config) *IFlowExecutor { return &IFlowExecutor{cfg: cfg} }
 
-// Identifier returns the provider key.
 func (e *IFlowExecutor) Identifier() string { return "iflow" }
 
-// PrepareRequest implements ProviderExecutor but requires no preprocessing.
-func (e *IFlowExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error { return nil }
+func (e *IFlowExecutor) PrepareRequest(_ *http.Request, _ *provider.Auth) error { return nil }
 
-// Execute performs a non-streaming chat completion request.
-func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+func (e *IFlowExecutor) Execute(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (resp provider.Response, err error) {
 	apiKey, baseURL := iflowCreds(auth)
 	if strings.TrimSpace(apiKey) == "" {
 		err = fmt.Errorf("iflow executor: missing api key")
@@ -87,24 +81,22 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	reporter.publish(ctx, extractUsageFromOpenAIResponse(data))
-	// Ensure usage is recorded even if upstream omits usage metadata.
 	reporter.ensurePublished(ctx)
 
-	translatedResp, err := TranslateOpenAIResponseNonStream(e.cfg, from, data, req.Model)
+	fromOpenAI := provider.FromString("openai")
+	translatedResp, err := TranslateResponseNonStream(e.cfg, fromOpenAI, from, data, req.Model)
 	if err != nil {
 		return resp, err
 	}
 	if translatedResp != nil {
-		resp = cliproxyexecutor.Response{Payload: translatedResp}
+		resp = provider.Response{Payload: translatedResp}
 	} else {
-		// Passthrough if translator returns nil
-		resp = cliproxyexecutor.Response{Payload: data}
+		resp = provider.Response{Payload: data}
 	}
 	return resp, nil
 }
 
-// ExecuteStream performs a streaming chat completion request.
-func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (stream <-chan provider.StreamChunk, err error) {
 	apiKey, baseURL := iflowCreds(auth)
 	if strings.TrimSpace(apiKey) == "" {
 		err = fmt.Errorf("iflow executor: missing api key")
@@ -123,7 +115,6 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 
-	// Ensure tools array exists to avoid provider quirks similar to Qwen's behaviour.
 	toolsResult := gjson.GetBytes(body, "tools")
 	if toolsResult.Exists() && toolsResult.IsArray() && len(toolsResult.Array()) == 0 {
 		body = ensureToolsArray(body)
@@ -161,17 +152,15 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}), nil
 }
 
-func (e *IFlowExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *IFlowExecutor) CountTokens(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (provider.Response, error) {
 	return CountTokensForOpenAIProvider(ctx, e.cfg, "iflow executor", opts.SourceFormat, req.Model, req.Payload, req.Metadata)
 }
 
-// Refresh refreshes OAuth tokens or cookie-based API keys and updates the stored API key.
-func (e *IFlowExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+func (e *IFlowExecutor) Refresh(ctx context.Context, auth *provider.Auth) (*provider.Auth, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("iflow executor: auth is nil")
 	}
 
-	// Check if this is cookie-based authentication
 	var cookie string
 	var email string
 	if auth.Metadata != nil {
@@ -183,20 +172,16 @@ func (e *IFlowExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 		}
 	}
 
-	// If cookie is present, use cookie-based refresh
 	if cookie != "" && email != "" {
 		return e.refreshCookieBased(ctx, auth, cookie, email)
 	}
 
-	// Otherwise, use OAuth-based refresh
 	return e.refreshOAuthBased(ctx, auth)
 }
 
-// refreshCookieBased refreshes API key using browser cookie
-func (e *IFlowExecutor) refreshCookieBased(ctx context.Context, auth *cliproxyauth.Auth, cookie, email string) (*cliproxyauth.Auth, error) {
+func (e *IFlowExecutor) refreshCookieBased(ctx context.Context, auth *provider.Auth, cookie, email string) (*provider.Auth, error) {
 	log.Debugf("iflow executor: checking refresh need for cookie-based API key for user: %s", email)
 
-	// Get current expiry time from metadata
 	var currentExpire string
 	if auth.Metadata != nil {
 		if v, ok := auth.Metadata["expired"].(string); ok {
@@ -204,11 +189,9 @@ func (e *IFlowExecutor) refreshCookieBased(ctx context.Context, auth *cliproxyau
 		}
 	}
 
-	// Check if refresh is needed
 	needsRefresh, _, err := iflowauth.ShouldRefreshAPIKey(currentExpire)
 	if err != nil {
 		log.Warnf("iflow executor: failed to check refresh need: %v", err)
-		// If we can't check, continue with refresh anyway as a safety measure
 	} else if !needsRefresh {
 		log.Debugf("iflow executor: no refresh needed for user: %s", email)
 		return auth, nil
@@ -243,8 +226,7 @@ func (e *IFlowExecutor) refreshCookieBased(ctx context.Context, auth *cliproxyau
 	return auth, nil
 }
 
-// refreshOAuthBased refreshes tokens using OAuth refresh token
-func (e *IFlowExecutor) refreshOAuthBased(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+func (e *IFlowExecutor) refreshOAuthBased(ctx context.Context, auth *provider.Auth) (*provider.Auth, error) {
 	refreshToken := ""
 	oldAccessToken := ""
 	if auth.Metadata != nil {
@@ -259,7 +241,6 @@ func (e *IFlowExecutor) refreshOAuthBased(ctx context.Context, auth *cliproxyaut
 		return auth, nil
 	}
 
-	// Log the old access token (masked) before refresh
 	if oldAccessToken != "" {
 		log.Debugf("iflow executor: refreshing access token, old: %s", util.HideAPIKey(oldAccessToken))
 	}
@@ -285,7 +266,6 @@ func (e *IFlowExecutor) refreshOAuthBased(ctx context.Context, auth *cliproxyaut
 	auth.Metadata["type"] = "iflow"
 	auth.Metadata["last_refresh"] = time.Now().Format(time.RFC3339)
 
-	// Log the new access token (masked) after successful refresh
 	log.Debugf("iflow executor: token refresh successful, new: %s", util.HideAPIKey(tokenData.AccessToken))
 
 	if auth.Attributes == nil {
@@ -305,9 +285,7 @@ func applyIFlowHeaders(r *http.Request, apiKey string, stream bool) {
 	}, stream)
 }
 
-// iflowCreds extracts credentials for iFlow API.
-// Delegates to the common ExtractCreds function with iFlow configuration.
-func iflowCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+func iflowCreds(a *provider.Auth) (apiKey, baseURL string) {
 	return ExtractCreds(a, IFlowCredsConfig)
 }
 

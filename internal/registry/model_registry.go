@@ -11,7 +11,7 @@ import (
 	"time"
 
 	misc "github.com/nghyane/llm-mux/internal/misc"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // ModelInfo represents information about an available model

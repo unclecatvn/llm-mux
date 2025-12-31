@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // OAuthServer handles the local HTTP server for OAuth callbacks.

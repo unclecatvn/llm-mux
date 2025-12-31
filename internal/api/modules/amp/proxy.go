@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // readCloser wraps a reader and forwards Close to a separate closer.

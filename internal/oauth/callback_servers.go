@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // ProviderConfig defines the callback configuration for an OAuth provider.

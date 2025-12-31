@@ -17,9 +17,9 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/nghyane/llm-mux/internal/embedded"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 const (
@@ -156,7 +156,7 @@ func (s *ObjectTokenStore) Bootstrap(ctx context.Context) error {
 }
 
 // Save persists authentication metadata to disk and uploads it to the object storage backend.
-func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
+func (s *ObjectTokenStore) Save(ctx context.Context, auth *provider.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("object store: auth is nil")
 	}
@@ -227,12 +227,12 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 }
 
 // List enumerates auth JSON files from the mirrored workspace.
-func (s *ObjectTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error) {
+func (s *ObjectTokenStore) List(_ context.Context) ([]*provider.Auth, error) {
 	dir := strings.TrimSpace(s.AuthDir())
 	if dir == "" {
 		return nil, fmt.Errorf("object store: auth directory not configured")
 	}
-	entries := make([]*cliproxyauth.Auth, 0, 32)
+	entries := make([]*provider.Auth, 0, 32)
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -361,7 +361,7 @@ func (s *ObjectTokenStore) syncConfigFromBucket(ctx context.Context) error {
 			if errCreate := os.MkdirAll(filepath.Dir(s.configPath), 0o700); errCreate != nil {
 				return fmt.Errorf("object store: prepare config directory: %w", errCreate)
 			}
-			if errWrite := os.WriteFile(s.configPath, embedded.DefaultConfigTemplate(), 0o600); errWrite != nil {
+			if errWrite := os.WriteFile(s.configPath, config.GenerateDefaultConfigYAML(), 0o600); errWrite != nil {
 				return fmt.Errorf("object store: write config from template: %w", errWrite)
 			}
 		}
@@ -500,7 +500,7 @@ func (s *ObjectTokenStore) prefixedKey(key string) string {
 	return strings.TrimLeft(s.cfg.Prefix+"/"+key, "/")
 }
 
-func (s *ObjectTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
+func (s *ObjectTokenStore) resolveAuthPath(auth *provider.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("object store: auth is nil")
 	}
@@ -547,7 +547,7 @@ func (s *ObjectTokenStore) resolveDeletePath(id string) (string, error) {
 	return filepath.Join(s.authDir, clean), nil
 }
 
-func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
+func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*provider.Auth, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
@@ -559,9 +559,9 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	if err = json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
 	}
-	provider := strings.TrimSpace(valueAsString(metadata["type"]))
-	if provider == "" {
-		provider = "unknown"
+	providerName := strings.TrimSpace(valueAsString(metadata["type"]))
+	if providerName == "" {
+		providerName = "unknown"
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -576,12 +576,12 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	if email := strings.TrimSpace(valueAsString(metadata["email"])); email != "" {
 		attr["email"] = email
 	}
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		ID:               rel,
-		Provider:         provider,
+		Provider:         providerName,
 		FileName:         rel,
 		Label:            labelFor(metadata),
-		Status:           cliproxyauth.StatusActive,
+		Status:           provider.StatusActive,
 		Attributes:       attr,
 		Metadata:         metadata,
 		CreatedAt:        info.ModTime(),

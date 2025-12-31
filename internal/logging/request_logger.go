@@ -18,10 +18,8 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
-	log "github.com/sirupsen/logrus"
 
 	"github.com/nghyane/llm-mux/internal/interfaces"
-	"github.com/nghyane/llm-mux/internal/util"
 )
 
 var (
@@ -197,7 +195,7 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 
 	if force && !l.enabled {
 		if errCleanup := l.cleanupOldErrorLogs(); errCleanup != nil {
-			log.WithError(errCleanup).Warn("failed to clean up old error logs")
+			WithError(errCleanup).Warn("failed to clean up old error logs")
 		}
 	}
 
@@ -349,7 +347,7 @@ func (l *FileRequestLogger) cleanupOldErrorLogs() error {
 		}
 		info, errInfo := entry.Info()
 		if errInfo != nil {
-			log.WithError(errInfo).Warn("failed to read error log info")
+			WithError(errInfo).Warn("failed to read error log info")
 			continue
 		}
 		files = append(files, logFile{name: name, modTime: info.ModTime()})
@@ -365,7 +363,7 @@ func (l *FileRequestLogger) cleanupOldErrorLogs() error {
 
 	for _, file := range files[10:] {
 		if errRemove := os.Remove(filepath.Join(l.logsDir, file.name)); errRemove != nil {
-			log.WithError(errRemove).Warnf("failed to remove old error log: %s", file.name)
+			WithError(errRemove).Warnf("failed to remove old error log: %s", file.name)
 		}
 	}
 
@@ -495,7 +493,7 @@ func (l *FileRequestLogger) decompressGzip(data []byte) ([]byte, error) {
 	}
 	defer func() {
 		if errClose := reader.Close(); errClose != nil {
-			log.WithError(errClose).Warn("failed to close gzip reader in request logger")
+			WithError(errClose).Warn("failed to close gzip reader in request logger")
 		}
 	}()
 
@@ -518,7 +516,7 @@ func (l *FileRequestLogger) decompressDeflate(data []byte) ([]byte, error) {
 	reader := flate.NewReader(bytes.NewReader(data))
 	defer func() {
 		if errClose := reader.Close(); errClose != nil {
-			log.WithError(errClose).Warn("failed to close deflate reader in request logger")
+			WithError(errClose).Warn("failed to close deflate reader in request logger")
 		}
 	}()
 
@@ -591,7 +589,7 @@ func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[st
 	content.WriteString("=== HEADERS ===\n")
 	for key, values := range headers {
 		for _, value := range values {
-			masked := util.MaskSensitiveHeaderValue(key, value)
+			masked := maskSensitiveHeaderValue(key, value)
 			content.WriteString(fmt.Sprintf("%s: %s\n", key, masked))
 		}
 	}

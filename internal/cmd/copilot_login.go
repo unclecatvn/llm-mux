@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/nghyane/llm-mux/internal/auth/login"
 	"github.com/nghyane/llm-mux/internal/config"
-	sdkAuth "github.com/nghyane/llm-mux/sdk/auth"
 )
 
 // DoCopilotLogin performs the GitHub Copilot OAuth device flow login.
@@ -16,7 +16,7 @@ func DoCopilotLogin(cfg *config.Config, options *LoginOptions) {
 
 	manager := newAuthManager()
 
-	authOpts := &sdkAuth.LoginOptions{
+	authOpts := &login.LoginOptions{
 		NoBrowser: options.NoBrowser,
 		Metadata:  map[string]string{},
 	}

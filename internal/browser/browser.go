@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/skratchdot/open-golang/open"
 )
 

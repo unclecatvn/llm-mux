@@ -14,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nghyane/llm-mux/internal/config"
 	"github.com/nghyane/llm-mux/internal/util"
-	sdkconfig "github.com/nghyane/llm-mux/sdk/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,7 +89,7 @@ func (h *Handler) fetchLatestVersion(c *gin.Context) (string, error) {
 		proxyURL = strings.TrimSpace(h.cfg.ProxyURL)
 	}
 	if proxyURL != "" {
-		sdkCfg := &sdkconfig.SDKConfig{ProxyURL: proxyURL}
+		sdkCfg := &config.SDKConfig{ProxyURL: proxyURL}
 		util.SetProxy(sdkCfg, client)
 	}
 

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
+	"github.com/nghyane/llm-mux/internal/provider"
 )
 
 // SetAuthUpdateQueue sets the queue used to emit auth updates.
@@ -42,7 +42,7 @@ func (w *Watcher) DispatchRuntimeAuthUpdate(update AuthUpdate) bool {
 	}
 	w.clientsMutex.Lock()
 	if w.runtimeAuths == nil {
-		w.runtimeAuths = make(map[string]*coreauth.Auth)
+		w.runtimeAuths = make(map[string]*provider.Auth)
 	}
 	switch update.Action {
 	case AuthUpdateActionAdd, AuthUpdateActionModify:
@@ -50,7 +50,7 @@ func (w *Watcher) DispatchRuntimeAuthUpdate(update AuthUpdate) bool {
 			clone := update.Auth.Clone()
 			w.runtimeAuths[clone.ID] = clone
 			if w.currentAuths == nil {
-				w.currentAuths = make(map[string]*coreauth.Auth)
+				w.currentAuths = make(map[string]*provider.Auth)
 			}
 			w.currentAuths[clone.ID] = clone.Clone()
 		}
@@ -89,8 +89,8 @@ func (w *Watcher) refreshAuthState() {
 	w.dispatchAuthUpdates(updates)
 }
 
-func (w *Watcher) prepareAuthUpdatesLocked(auths []*coreauth.Auth) []AuthUpdate {
-	newState := make(map[string]*coreauth.Auth, len(auths))
+func (w *Watcher) prepareAuthUpdatesLocked(auths []*provider.Auth) []AuthUpdate {
+	newState := make(map[string]*provider.Auth, len(auths))
 	for _, auth := range auths {
 		if auth == nil || auth.ID == "" {
 			continue

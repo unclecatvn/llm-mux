@@ -11,7 +11,6 @@ import (
 	"github.com/nghyane/llm-mux/internal/translator/to_ir"
 )
 
-// ToOllamaRequest converts unified request to Ollama API format.
 func ToOllamaRequest(req *ir.UnifiedChatRequest) ([]byte, error) {
 	if req.Metadata != nil {
 		if ep, ok := req.Metadata["ollama_endpoint"].(string); ok && ep == "generate" {
@@ -227,6 +226,9 @@ func ToOllamaGenerateResponse(ms []ir.Message, us *ir.Usage, model string) ([]by
 }
 
 func ToOllamaChatChunk(ev ir.UnifiedEvent, model string) ([]byte, error) {
+	if ev.Type == ir.EventTypeStreamMeta {
+		return nil, nil
+	}
 	res := map[string]any{"model": model, "created_at": time.Now().UTC().Format(time.RFC3339), "done": false, "message": map[string]any{"role": "assistant", "content": ""}}
 	switch ev.Type {
 	case ir.EventTypeToken:
@@ -251,6 +253,9 @@ func ToOllamaChatChunk(ev ir.UnifiedEvent, model string) ([]byte, error) {
 }
 
 func ToOllamaGenerateChunk(ev ir.UnifiedEvent, model string) ([]byte, error) {
+	if ev.Type == ir.EventTypeStreamMeta {
+		return nil, nil
+	}
 	res := map[string]any{"model": model, "created_at": time.Now().UTC().Format(time.RFC3339), "done": false, "response": ""}
 	switch ev.Type {
 	case ir.EventTypeToken:

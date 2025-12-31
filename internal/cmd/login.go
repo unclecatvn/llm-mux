@@ -18,11 +18,11 @@ import (
 	"time"
 
 	"github.com/nghyane/llm-mux/internal/auth/gemini"
+	"github.com/nghyane/llm-mux/internal/auth/login"
 	"github.com/nghyane/llm-mux/internal/config"
 	"github.com/nghyane/llm-mux/internal/interfaces"
-	sdkAuth "github.com/nghyane/llm-mux/sdk/auth"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	"github.com/nghyane/llm-mux/internal/provider"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/tidwall/gjson"
 )
 
@@ -54,14 +54,14 @@ func DoLogin(cfg *config.Config, projectID string, options *LoginOptions) {
 
 	ctx := context.Background()
 
-	loginOpts := &sdkAuth.LoginOptions{
+	loginOpts := &login.LoginOptions{
 		NoBrowser: options.NoBrowser,
 		ProjectID: strings.TrimSpace(projectID),
 		Metadata:  map[string]string{},
 		Prompt:    options.Prompt,
 	}
 
-	authenticator := sdkAuth.NewGeminiAuthenticator()
+	authenticator := login.NewGeminiAuthenticator()
 	record, errLogin := authenticator.Login(ctx, cfg, loginOpts)
 	if errLogin != nil {
 		log.Fatalf("Gemini authentication failed: %v", errLogin)
@@ -145,7 +145,7 @@ func DoLogin(cfg *config.Config, projectID string, options *LoginOptions) {
 
 	updateAuthRecord(record, storage)
 
-	store := sdkAuth.GetTokenStore()
+	store := login.GetTokenStore()
 	if setter, okSetter := store.(interface{ SetBaseDir(string) }); okSetter && cfg != nil {
 		setter.SetBaseDir(cfg.AuthDir)
 	}
@@ -559,7 +559,7 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 	return true, nil
 }
 
-func updateAuthRecord(record *cliproxyauth.Auth, storage *gemini.GeminiTokenStorage) {
+func updateAuthRecord(record *provider.Auth, storage *gemini.GeminiTokenStorage) {
 	if record == nil || storage == nil {
 		return
 	}

@@ -6,12 +6,12 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/claude"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/gemini"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/openai"
 	"github.com/nghyane/llm-mux/internal/util"
-	"github.com/nghyane/llm-mux/sdk/api/handlers"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/claude"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/gemini"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/openai"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // localhostOnlyMiddleware returns a middleware that dynamically checks the module's
@@ -81,7 +81,7 @@ func noCORSMiddleware() gin.HandlerFunc {
 // registerManagementRoutes registers Amp management proxy routes
 // These routes proxy through to the Amp control plane for OAuth, user management, etc.
 // Uses dynamic middleware and proxy getter for hot-reload support.
-func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *handlers.BaseAPIHandler) {
+func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *format.BaseAPIHandler) {
 	ampAPI := engine.Group("/api")
 
 	// Always disable CORS for management routes to prevent browser-based attacks
@@ -178,7 +178,7 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 //	/api/provider/openai/v1/chat/completions
 //	/api/provider/anthropic/v1/messages
 //	/api/provider/google/v1beta/models
-func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *handlers.BaseAPIHandler, auth gin.HandlerFunc) {
+func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *format.BaseAPIHandler, auth gin.HandlerFunc) {
 	// Create handler instances for different providers
 	openaiHandlers := openai.NewOpenAIAPIHandler(baseHandler)
 	geminiHandlers := gemini.NewGeminiAPIHandler(baseHandler)

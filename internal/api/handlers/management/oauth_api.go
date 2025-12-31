@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/auth"
 	"github.com/nghyane/llm-mux/internal/auth/claude"
 	"github.com/nghyane/llm-mux/internal/auth/codex"
 	"github.com/nghyane/llm-mux/internal/auth/copilot"
@@ -19,9 +20,8 @@ import (
 	"github.com/nghyane/llm-mux/internal/auth/qwen"
 	"github.com/nghyane/llm-mux/internal/misc"
 	"github.com/nghyane/llm-mux/internal/oauth"
-	"github.com/nghyane/llm-mux/internal/util"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	"github.com/nghyane/llm-mux/internal/provider"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -82,10 +82,10 @@ func (h *Handler) OAuthStart(c *gin.Context) {
 	}
 
 	// Normalize provider name
-	provider := normalizeProvider(req.Provider)
+	providerName := normalizeProvider(req.Provider)
 
 	// Handle device flow providers separately
-	switch provider {
+	switch providerName {
 	case "qwen":
 		h.startQwenDeviceFlow(c)
 		return
@@ -95,7 +95,7 @@ func (h *Handler) OAuthStart(c *gin.Context) {
 	}
 
 	// Build auth URL for OAuth providers
-	authURL, state, codeVerifier, err := h.buildProviderAuthURL(provider)
+	authURL, state, codeVerifier, err := h.buildProviderAuthURL(providerName)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, OAuthStartResponse{
 			Status: "error",
@@ -105,19 +105,19 @@ func (h *Handler) OAuthStart(c *gin.Context) {
 	}
 
 	// Register OAuth request with codeVerifier for PKCE providers
-	oauthReq := oauthService.Registry().Create(state, provider, oauth.ModeWebUI)
+	oauthReq := oauthService.Registry().Create(state, providerName, oauth.ModeWebUI)
 	oauthReq.CodeVerifier = codeVerifier
 
 	// Start callback forwarder for WebUI mode
-	if targetURL, errTarget := h.managementCallbackURL("/" + provider + "/callback"); errTarget == nil {
-		if port := oauth.GetCallbackPort(provider); port > 0 {
-			_, _ = startCallbackForwarder(port, provider, targetURL)
+	if targetURL, errTarget := h.managementCallbackURL("/" + providerName + "/callback"); errTarget == nil {
+		if port := oauth.GetCallbackPort(providerName); port > 0 {
+			_, _ = startCallbackForwarder(port, providerName, targetURL)
 		}
 	}
 
 	// Start background polling goroutine
 	ctx, cancel := context.WithTimeout(context.Background(), deviceFlowTimeout)
-	go h.pollOAuthCallback(ctx, cancel, provider, state)
+	go h.pollOAuthCallback(ctx, cancel, providerName, state)
 
 	c.JSON(http.StatusOK, OAuthStartResponse{
 		Status:       "ok",
@@ -145,28 +145,28 @@ func normalizeProvider(provider string) string {
 
 // pollOAuthCallback is a unified poller for all OAuth providers.
 // It polls the callback file and dispatches to provider-specific token exchange.
-func (h *Handler) pollOAuthCallback(ctx context.Context, cancel context.CancelFunc, provider, state string) {
+func (h *Handler) pollOAuthCallback(ctx context.Context, cancel context.CancelFunc, providerName, state string) {
 	defer cancel()
 
-	log.WithFields(log.Fields{"state": state, "provider": provider}).Info("Waiting for OAuth callback...")
+	log.WithFields(log.Fields{"state": state, "provider": providerName}).Info("Waiting for OAuth callback...")
 
-	callback, err := h.waitForCallbackFile(ctx, provider, state)
+	callback, err := h.waitForCallbackFile(ctx, providerName, state)
 	if err != nil {
 		if ctx.Err() != nil {
 			oauthService.Registry().Cancel(state)
-			log.WithField("state", state).Infof("%s OAuth cancelled or timed out", provider)
+			log.WithField("state", state).Infof("%s OAuth cancelled or timed out", providerName)
 		} else {
 			oauthService.Registry().Fail(state, err.Error())
 		}
 		return
 	}
 
-	log.WithFields(log.Fields{"state": state, "provider": provider}).Info("Exchanging code for tokens...")
+	log.WithFields(log.Fields{"state": state, "provider": providerName}).Info("Exchanging code for tokens...")
 
-	record, err := h.exchangeOAuthCode(ctx, provider, state, callback)
+	record, err := h.exchangeOAuthCode(ctx, providerName, state, callback)
 	if err != nil {
 		oauthService.Registry().Fail(state, fmt.Sprintf("Token exchange failed: %v", err))
-		log.WithError(err).WithField("provider", provider).Error("Token exchange failed")
+		log.WithError(err).WithField("provider", providerName).Error("Token exchange failed")
 		return
 	}
 
@@ -177,12 +177,12 @@ func (h *Handler) pollOAuthCallback(ctx context.Context, cancel context.CancelFu
 	}
 
 	oauthService.Registry().Complete(state, &oauth.OAuthResult{State: state, Code: "success"})
-	log.WithFields(log.Fields{"state": state, "path": savedPath, "provider": provider}).Infof("%s authentication successful", provider)
+	log.WithFields(log.Fields{"state": state, "path": savedPath, "provider": providerName}).Infof("%s authentication successful", providerName)
 }
 
 // waitForCallbackFile polls for the OAuth callback file and returns parsed data.
-func (h *Handler) waitForCallbackFile(ctx context.Context, provider, state string) (*oauthCallbackData, error) {
-	callbackFile := fmt.Sprintf("%s/.oauth-%s-%s.oauth", h.cfg.AuthDir, provider, state)
+func (h *Handler) waitForCallbackFile(ctx context.Context, providerName, state string) (*oauthCallbackData, error) {
+	callbackFile := fmt.Sprintf("%s/.oauth-%s-%s.oauth", h.cfg.AuthDir, providerName, state)
 	ticker := time.NewTicker(callbackPollInterval)
 	defer ticker.Stop()
 
@@ -214,10 +214,10 @@ func (h *Handler) waitForCallbackFile(ctx context.Context, provider, state strin
 }
 
 // exchangeOAuthCode dispatches to provider-specific token exchange logic.
-func (h *Handler) exchangeOAuthCode(ctx context.Context, provider, state string, callback *oauthCallbackData) (*coreauth.Auth, error) {
-	switch provider {
+func (h *Handler) exchangeOAuthCode(ctx context.Context, providerName, state string, callback *oauthCallbackData) (*provider.Auth, error) {
+	switch providerName {
 	case "gemini", "antigravity":
-		return h.exchangeGoogleCode(ctx, provider, callback.Code)
+		return h.exchangeGoogleCode(ctx, providerName, callback.Code)
 	case "claude":
 		return h.exchangeClaudeCode(ctx, state, callback.Code)
 	case "codex":
@@ -225,7 +225,7 @@ func (h *Handler) exchangeOAuthCode(ctx context.Context, provider, state string,
 	case "iflow":
 		return h.exchangeIFlowCode(ctx, callback)
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s", provider)
+		return nil, fmt.Errorf("unsupported provider: %s", providerName)
 	}
 }
 
@@ -268,22 +268,16 @@ func (h *Handler) pollQwenToken(ctx context.Context, cancel context.CancelFunc, 
 
 	log.WithField("state", state).Info("Waiting for Qwen authentication...")
 
-	tokenData, err := qwenAuth.PollForToken(deviceFlow.DeviceCode, deviceFlow.CodeVerifier)
+	tokenData, err := qwenAuth.PollForToken(ctx, deviceFlow.DeviceCode, deviceFlow.CodeVerifier)
 	if err != nil {
-		if ctx.Err() != nil {
-			oauthService.Registry().Cancel(state)
-			log.WithField("state", state).Info("Qwen authentication cancelled or timed out")
-		} else {
-			oauthService.Registry().Fail(state, fmt.Sprintf("Authentication failed: %v", err))
-			log.WithError(err).WithField("state", state).Error("Qwen authentication failed")
-		}
+		h.handlePollError(ctx, state, "Qwen", err)
 		return
 	}
 
 	storage := qwenAuth.CreateTokenStorage(tokenData)
 	storage.Email = fmt.Sprintf("qwen-%d", time.Now().UnixMilli())
 
-	record := &coreauth.Auth{
+	record := &provider.Auth{
 		ID:       fmt.Sprintf("qwen-%s.json", storage.Email),
 		Provider: "qwen",
 		FileName: fmt.Sprintf("qwen-%s.json", storage.Email),
@@ -335,13 +329,7 @@ func (h *Handler) pollCopilotToken(ctx context.Context, cancel context.CancelFun
 
 	creds, err := copilotAuth.WaitForAuthorization(ctx, deviceCode)
 	if err != nil {
-		if ctx.Err() != nil {
-			oauthService.Registry().Cancel(state)
-			log.WithField("state", state).Info("Copilot authentication cancelled or timed out")
-		} else {
-			oauthService.Registry().Fail(state, fmt.Sprintf("Authentication failed: %v", err))
-			log.WithError(err).WithField("state", state).Error("Copilot authentication failed")
-		}
+		h.handlePollError(ctx, state, "Copilot", err)
 		return
 	}
 
@@ -353,7 +341,7 @@ func (h *Handler) pollCopilotToken(ctx context.Context, cancel context.CancelFun
 	}
 
 	fileName := fmt.Sprintf("github-copilot-%s.json", creds.Username)
-	record := &coreauth.Auth{
+	record := &provider.Auth{
 		ID:       fileName,
 		Provider: "github-copilot",
 		FileName: fileName,
@@ -371,8 +359,18 @@ func (h *Handler) pollCopilotToken(ctx context.Context, cancel context.CancelFun
 	h.finishAuthFlow(ctx, state, record)
 }
 
+func (h *Handler) handlePollError(ctx context.Context, state, providerName string, err error) {
+	if ctx.Err() != nil {
+		oauthService.Registry().Cancel(state)
+		log.WithField("state", state).Infof("%s authentication cancelled or timed out", providerName)
+	} else {
+		oauthService.Registry().Fail(state, fmt.Sprintf("Authentication failed: %v", err))
+		log.WithError(err).WithField("state", state).Errorf("%s authentication failed", providerName)
+	}
+}
+
 // finishAuthFlow saves the auth record and completes the OAuth flow.
-func (h *Handler) finishAuthFlow(ctx context.Context, state string, record *coreauth.Auth) {
+func (h *Handler) finishAuthFlow(ctx context.Context, state string, record *provider.Auth) {
 	savedPath, err := h.saveTokenRecord(ctx, record)
 	if err != nil {
 		oauthService.Registry().Fail(state, fmt.Sprintf("Failed to save tokens: %v", err))
@@ -427,25 +425,23 @@ func GetOAuthService() *oauth.Service {
 // =============================================================================
 
 // buildProviderAuthURL builds the authorization URL for a provider.
-func (h *Handler) buildProviderAuthURL(provider string) (authURL, state, codeVerifier string, err error) {
+func (h *Handler) buildProviderAuthURL(providerName string) (authURL, state, codeVerifier string, err error) {
 	state, err = misc.GenerateRandomState()
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to generate state: %w", err)
 	}
 
-	switch provider {
+	switch providerName {
 	case "claude":
 		return h.buildClaudeAuthURL(state)
 	case "codex":
 		return h.buildCodexAuthURL(state)
-	case "gemini":
-		return h.buildGeminiAuthURL(state)
-	case "antigravity":
-		return h.buildAntigravityAuthURL(state)
+	case "gemini", "antigravity":
+		return h.buildGoogleAuthURL(providerName, state)
 	case "iflow":
 		return h.buildIFlowAuthURL(state)
 	default:
-		return "", "", "", fmt.Errorf("unsupported OAuth provider: %s", provider)
+		return "", "", "", fmt.Errorf("unsupported OAuth provider: %s", providerName)
 	}
 }
 
@@ -479,36 +475,20 @@ func (h *Handler) buildCodexAuthURL(state string) (string, string, string, error
 	return authURL, state, pkceCodes.CodeVerifier, nil
 }
 
-func (h *Handler) buildGeminiAuthURL(state string) (string, string, string, error) {
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth2callback", oauth.GetCallbackPort("gemini"))
-
-	conf := &oauth2.Config{
-		ClientID:     oauth.GeminiClientID,
-		ClientSecret: oauth.GeminiClientSecret,
-		RedirectURL:  redirectURI,
-		Scopes:       []string{"openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/cloud-platform"},
-		Endpoint:     google.Endpoint,
+func (h *Handler) buildGoogleAuthURL(providerName, state string) (string, string, string, error) {
+	cfg, ok := googleOAuthConfigs[providerName]
+	if !ok {
+		return "", "", "", fmt.Errorf("unknown Google OAuth provider: %s", providerName)
 	}
 
-	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
-	return authURL, state, "", nil
-}
-
-func (h *Handler) buildAntigravityAuthURL(state string) (string, string, string, error) {
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", oauth.GetCallbackPort("antigravity"))
+	redirectURI := fmt.Sprintf("http://localhost:%d/%s", oauth.GetCallbackPort(providerName), cfg.CallbackPath)
 
 	conf := &oauth2.Config{
-		ClientID:     oauth.AntigravityClientID,
-		ClientSecret: oauth.AntigravityClientSecret,
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
 		RedirectURL:  redirectURI,
-		Scopes: []string{
-			"https://www.googleapis.com/auth/cloud-platform",
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-			"https://www.googleapis.com/auth/cclog",
-			"https://www.googleapis.com/auth/experimentsandconfigs",
-		},
-		Endpoint: google.Endpoint,
+		Scopes:       cfg.Scopes,
+		Endpoint:     google.Endpoint,
 	}
 
 	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
@@ -525,12 +505,12 @@ func (h *Handler) buildIFlowAuthURL(state string) (string, string, string, error
 // Token Exchange Functions
 // =============================================================================
 
-// googleOAuthConfig holds provider-specific configuration for Google OAuth.
 type googleOAuthConfig struct {
 	ClientID     string
 	ClientSecret string
 	CallbackPath string
 	FetchProject bool
+	Scopes       []string
 }
 
 var googleOAuthConfigs = map[string]googleOAuthConfig{
@@ -539,23 +519,31 @@ var googleOAuthConfigs = map[string]googleOAuthConfig{
 		ClientSecret: oauth.GeminiClientSecret,
 		CallbackPath: "oauth2callback",
 		FetchProject: false,
+		Scopes:       []string{"openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/cloud-platform"},
 	},
 	"antigravity": {
 		ClientID:     oauth.AntigravityClientID,
 		ClientSecret: oauth.AntigravityClientSecret,
 		CallbackPath: "oauth-callback",
 		FetchProject: true,
+		Scopes: []string{
+			"https://www.googleapis.com/auth/cloud-platform",
+			"https://www.googleapis.com/auth/userinfo.email",
+			"https://www.googleapis.com/auth/userinfo.profile",
+			"https://www.googleapis.com/auth/cclog",
+			"https://www.googleapis.com/auth/experimentsandconfigs",
+		},
 	},
 }
 
-func (h *Handler) exchangeGoogleCode(ctx context.Context, provider, code string) (*coreauth.Auth, error) {
-	cfg, ok := googleOAuthConfigs[provider]
+func (h *Handler) exchangeGoogleCode(ctx context.Context, providerName, code string) (*provider.Auth, error) {
+	cfg, ok := googleOAuthConfigs[providerName]
 	if !ok {
-		return nil, fmt.Errorf("unknown Google OAuth provider: %s", provider)
+		return nil, fmt.Errorf("unknown Google OAuth provider: %s", providerName)
 	}
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/%s", oauth.GetCallbackPort(provider), cfg.CallbackPath)
-	httpClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
+	redirectURI := fmt.Sprintf("http://localhost:%d/%s", oauth.GetCallbackPort(providerName), cfg.CallbackPath)
+	httpClient := h.getHTTPClient()
 
 	tokenResp, err := exchangeGoogleOAuthCode(ctx, code, redirectURI, cfg.ClientID, cfg.ClientSecret, httpClient)
 	if err != nil {
@@ -576,10 +564,10 @@ func (h *Handler) exchangeGoogleCode(ctx context.Context, provider, code string)
 		projectID, _ = fetchAntigravityProjectID(ctx, tokenResp.AccessToken, httpClient)
 	}
 
-	return buildGoogleAuthRecord(provider, tokenResp, email, projectID), nil
+	return buildGoogleAuthRecord(providerName, tokenResp, email, projectID), nil
 }
 
-func (h *Handler) exchangeClaudeCode(ctx context.Context, state, code string) (*coreauth.Auth, error) {
+func (h *Handler) exchangeClaudeCode(ctx context.Context, state, code string) (*provider.Auth, error) {
 	oauthReq := oauthService.Registry().Get(state)
 	if oauthReq == nil || oauthReq.CodeVerifier == "" {
 		return nil, fmt.Errorf("codeVerifier not found in registry")
@@ -596,24 +584,10 @@ func (h *Handler) exchangeClaudeCode(ctx context.Context, state, code string) (*
 	storage := claudeAuth.CreateTokenStorage(bundle)
 	email := strings.TrimSpace(storage.Email)
 
-	fileName := "claude.json"
-	label := "claude"
-	if email != "" {
-		fileName = fmt.Sprintf("claude-%s.json", emailReplacer.Replace(email))
-		label = email
-	}
-
-	return &coreauth.Auth{
-		ID:       fileName,
-		Provider: "claude",
-		FileName: fileName,
-		Label:    label,
-		Storage:  storage,
-		Metadata: map[string]any{"email": email},
-	}, nil
+	return buildAuthRecordWithEmail("claude", email, storage, nil), nil
 }
 
-func (h *Handler) exchangeCodexCode(ctx context.Context, state, code string) (*coreauth.Auth, error) {
+func (h *Handler) exchangeCodexCode(ctx context.Context, state, code string) (*provider.Auth, error) {
 	oauthReq := oauthService.Registry().Get(state)
 	if oauthReq == nil || oauthReq.CodeVerifier == "" {
 		return nil, fmt.Errorf("codeVerifier not found in registry")
@@ -630,24 +604,10 @@ func (h *Handler) exchangeCodexCode(ctx context.Context, state, code string) (*c
 	storage := codexAuth.CreateTokenStorage(bundle)
 	email := strings.TrimSpace(storage.Email)
 
-	fileName := "codex.json"
-	label := "codex"
-	if email != "" {
-		fileName = fmt.Sprintf("codex-%s.json", emailReplacer.Replace(email))
-		label = email
-	}
-
-	return &coreauth.Auth{
-		ID:       fileName,
-		Provider: "codex",
-		FileName: fileName,
-		Label:    label,
-		Storage:  storage,
-		Metadata: map[string]any{"email": email, "account_id": storage.AccountID},
-	}, nil
+	return buildAuthRecordWithEmail("codex", email, storage, map[string]any{"account_id": storage.AccountID}), nil
 }
 
-func (h *Handler) exchangeIFlowCode(ctx context.Context, callback *oauthCallbackData) (*coreauth.Auth, error) {
+func (h *Handler) exchangeIFlowCode(ctx context.Context, callback *oauthCallbackData) (*provider.Auth, error) {
 	redirectURI := callback.RedirectURI
 	if redirectURI == "" {
 		redirectURI = fmt.Sprintf("http://localhost:%d/oauth2callback", iflow.CallbackPort)
@@ -662,34 +622,43 @@ func (h *Handler) exchangeIFlowCode(ctx context.Context, callback *oauthCallback
 	storage := iflowAuth.CreateTokenStorage(tokenData)
 	email := strings.TrimSpace(storage.Email)
 
-	fileName := "iflow.json"
-	label := "iflow"
-	if email != "" {
-		fileName = fmt.Sprintf("iflow-%s.json", emailReplacer.Replace(email))
-		label = email
-	}
-
-	return &coreauth.Auth{
-		ID:       fileName,
-		Provider: "iflow",
-		FileName: fileName,
-		Label:    label,
-		Storage:  storage,
-		Metadata: map[string]any{"email": email, "api_key": storage.APIKey},
-	}, nil
+	return buildAuthRecordWithEmail("iflow", email, storage, map[string]any{"api_key": storage.APIKey}), nil
 }
 
 // =============================================================================
 // Helper Functions
 // =============================================================================
 
+func buildAuthRecordWithEmail(providerName, email string, storage auth.TokenStorage, extraMeta map[string]any) *provider.Auth {
+	fileName := providerName + ".json"
+	label := providerName
+	if email != "" {
+		fileName = fmt.Sprintf("%s-%s.json", providerName, emailReplacer.Replace(email))
+		label = email
+	}
+
+	metadata := map[string]any{"email": email}
+	for k, v := range extraMeta {
+		metadata[k] = v
+	}
+
+	return &provider.Auth{
+		ID:       fileName,
+		Provider: providerName,
+		FileName: fileName,
+		Label:    label,
+		Storage:  storage,
+		Metadata: metadata,
+	}
+}
+
 // buildGoogleAuthRecord creates auth record for Google OAuth providers.
-func buildGoogleAuthRecord(provider string, tokenResp *googleTokenResponse, email, projectID string) *coreauth.Auth {
+func buildGoogleAuthRecord(providerType string, tokenResp *googleTokenResponse, email, projectID string) *provider.Auth {
 	now := time.Now()
 	var metadata map[string]any
 	var fileName string
 
-	if provider == "gemini" {
+	if providerType == "gemini" {
 		tokenData := map[string]any{
 			"access_token":  tokenResp.AccessToken,
 			"refresh_token": tokenResp.RefreshToken,
@@ -706,7 +675,7 @@ func buildGoogleAuthRecord(provider string, tokenResp *googleTokenResponse, emai
 		}
 	} else {
 		metadata = map[string]any{
-			"type":          provider,
+			"type":          providerType,
 			"access_token":  tokenResp.AccessToken,
 			"refresh_token": tokenResp.RefreshToken,
 			"expires_in":    tokenResp.ExpiresIn,
@@ -719,20 +688,20 @@ func buildGoogleAuthRecord(provider string, tokenResp *googleTokenResponse, emai
 		if projectID != "" {
 			metadata["project_id"] = projectID
 		}
-		fileName = provider + ".json"
+		fileName = providerType + ".json"
 		if email != "" {
-			fileName = fmt.Sprintf("%s-%s.json", provider, emailReplacer.Replace(email))
+			fileName = fmt.Sprintf("%s-%s.json", providerType, emailReplacer.Replace(email))
 		}
 	}
 
 	label := email
 	if label == "" {
-		label = provider
+		label = providerType
 	}
 
-	return &coreauth.Auth{
+	return &provider.Auth{
 		ID:       fileName,
-		Provider: provider,
+		Provider: providerType,
 		FileName: fileName,
 		Label:    label,
 		Metadata: metadata,

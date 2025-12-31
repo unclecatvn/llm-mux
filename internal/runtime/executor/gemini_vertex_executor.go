@@ -1,26 +1,3 @@
-// Package executor contains provider executors. This file implements the Vertex AI
-// Gemini executor that talks to Google Vertex AI endpoints using service account
-// credentials imported by the CLI.
-//
-// GeminiVertexExecutor handles requests to Google Vertex AI Gemini endpoints.
-//
-// Authentication (Strategy Pattern):
-//
-//   - Service Account: via auth.Metadata["service_account"] with OAuth2 token exchange
-//   - API Key: via auth.Attributes["api_key"] with x-goog-api-key header
-//
-// The executor uses VertexAuthStrategy interface to abstract authentication:
-//
-//   - serviceAccountStrategy: For project-based Vertex AI access
-//   - apiKeyStrategy: For AI Studio / Generative Language API access
-//
-// Supported models: gemini-* models via Vertex AI
-//
-// Features:
-//   - Streaming via SSE (streamGenerateContent)
-//   - Token counting via countTokens endpoint
-//   - Format translation (OpenAI/Claude -> Gemini)
-//   - Thinking content transformation for reasoning models
 package executor
 
 import (
@@ -35,64 +12,42 @@ import (
 
 	vertexauth "github.com/nghyane/llm-mux/internal/auth/vertex"
 	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/registry"
-	"github.com/nghyane/llm-mux/internal/translator/from_ir"
 	"github.com/nghyane/llm-mux/internal/translator/ir"
+	"github.com/nghyane/llm-mux/internal/translator/to_ir"
 	"github.com/nghyane/llm-mux/internal/util"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/tidwall/sjson"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
 const (
-	// vertexAPIVersion aligns with current public Vertex Generative AI API.
 	vertexAPIVersion = "v1"
 )
 
-// =============================================================================
-// VertexAuthStrategy Interface and Implementations (Strategy Pattern)
-// =============================================================================
-//
-// The Strategy pattern is used here to abstract authentication differences between:
-//   - Service Account authentication (OAuth2 token exchange, Vertex AI endpoints)
-//   - API Key authentication (static key header, Generative Language API endpoints)
-//
-// This allows the executor to support both authentication methods without
-// conditional logic scattered throughout the code.
-
-// VertexAuthStrategy defines the authentication strategy for Vertex AI requests.
-// Implementations provide different authentication mechanisms for accessing
-// Google AI endpoints.
 type VertexAuthStrategy interface {
-	// GetToken returns the authentication token (API key or access token).
-	GetToken(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) (string, error)
-	// BuildURL builds the request URL for the given action.
-	BuildURL(model, action string, opts cliproxyexecutor.Options) string
-	// ApplyAuth applies authentication headers to the request.
+	GetToken(ctx context.Context, cfg *config.Config, auth *provider.Auth) (string, error)
+	BuildURL(model, action string, opts provider.Options) string
 	ApplyAuth(req *http.Request, token string)
 }
 
-// serviceAccountStrategy implements VertexAuthStrategy using service account credentials.
 type serviceAccountStrategy struct {
 	projectID string
 	location  string
 	saJSON    []byte
 }
 
-func (s *serviceAccountStrategy) GetToken(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) (string, error) {
+func (s *serviceAccountStrategy) GetToken(ctx context.Context, cfg *config.Config, auth *provider.Auth) (string, error) {
 	return vertexAccessToken(ctx, cfg, auth, s.saJSON)
 }
 
-func (s *serviceAccountStrategy) BuildURL(model, action string, opts cliproxyexecutor.Options) string {
+func (s *serviceAccountStrategy) BuildURL(model, action string, opts provider.Options) string {
 	baseURL := vertexBaseURL(s.location)
 	ub := GetURLBuilder()
 	defer ub.Release()
-	ub.Grow(150) // vertex URLs are longer
+	ub.Grow(150)
 	ub.WriteString(baseURL)
 	ub.WriteString("/")
 	ub.WriteString(vertexAPIVersion)
@@ -113,24 +68,23 @@ func (s *serviceAccountStrategy) ApplyAuth(req *http.Request, token string) {
 	}
 }
 
-// apiKeyStrategy implements VertexAuthStrategy using API key credentials.
 type apiKeyStrategy struct {
 	apiKey  string
 	baseURL string
 }
 
-func (s *apiKeyStrategy) GetToken(_ context.Context, _ *config.Config, _ *cliproxyauth.Auth) (string, error) {
+func (s *apiKeyStrategy) GetToken(_ context.Context, _ *config.Config, _ *provider.Auth) (string, error) {
 	return s.apiKey, nil
 }
 
-func (s *apiKeyStrategy) BuildURL(model, action string, _ cliproxyexecutor.Options) string {
+func (s *apiKeyStrategy) BuildURL(model, action string, _ provider.Options) string {
 	baseURL := s.baseURL
 	if baseURL == "" {
 		baseURL = "https://generativelanguage.googleapis.com"
 	}
 	ub := GetURLBuilder()
 	defer ub.Release()
-	ub.Grow(150) // vertex URLs are longer
+	ub.Grow(150)
 	ub.WriteString(baseURL)
 	ub.WriteString("/")
 	ub.WriteString(vertexAPIVersion)
@@ -147,44 +101,24 @@ func (s *apiKeyStrategy) ApplyAuth(req *http.Request, token string) {
 	}
 }
 
-// =============================================================================
-// GeminiVertexExecutor
-// =============================================================================
-
-// GeminiVertexExecutor sends requests to Vertex AI Gemini endpoints.
-//
-// It supports two authentication modes via the Strategy pattern:
-//   - Service Account: Uses OAuth2 token exchange for project-scoped access
-//   - API Key: Uses static API key for AI Studio access
-//
-// The executor translates requests from OpenAI/Claude format to Gemini format,
-// handles streaming via SSE, and provides token counting capabilities.
 type GeminiVertexExecutor struct {
 	cfg *config.Config
 }
 
-// NewGeminiVertexExecutor constructs the Vertex executor.
 func NewGeminiVertexExecutor(cfg *config.Config) *GeminiVertexExecutor {
 	return &GeminiVertexExecutor{cfg: cfg}
 }
 
-// Identifier returns provider key for manager routing.
 func (e *GeminiVertexExecutor) Identifier() string { return "vertex" }
 
-// PrepareRequest is a no-op for Vertex.
-func (e *GeminiVertexExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error {
-	return nil
-}
+func (e *GeminiVertexExecutor) PrepareRequest(_ *http.Request, _ *provider.Auth) error { return nil }
 
-// resolveStrategy determines the appropriate auth strategy based on auth credentials.
-func (e *GeminiVertexExecutor) resolveStrategy(auth *cliproxyauth.Auth) (VertexAuthStrategy, error) {
-	// Try API key authentication first
+func (e *GeminiVertexExecutor) resolveStrategy(auth *provider.Auth) (VertexAuthStrategy, error) {
 	apiKey, baseURL := vertexAPICreds(auth)
 	if apiKey != "" {
 		return &apiKeyStrategy{apiKey: apiKey, baseURL: baseURL}, nil
 	}
 
-	// Fall back to service account authentication
 	projectID, location, saJSON, err := vertexCreds(auth)
 	if err != nil {
 		return nil, err
@@ -192,20 +126,15 @@ func (e *GeminiVertexExecutor) resolveStrategy(auth *cliproxyauth.Auth) (VertexA
 	return &serviceAccountStrategy{projectID: projectID, location: location, saJSON: saJSON}, nil
 }
 
-// =============================================================================
-// Execute (Non-Streaming)
-// =============================================================================
-
-// Execute handles non-streaming requests.
-func (e *GeminiVertexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *GeminiVertexExecutor) Execute(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (provider.Response, error) {
 	strategy, err := e.resolveStrategy(auth)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 	return e.executeWithStrategy(ctx, auth, req, opts, strategy)
 }
 
-func (e *GeminiVertexExecutor) executeWithStrategy(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, strategy VertexAuthStrategy) (resp cliproxyexecutor.Response, err error) {
+func (e *GeminiVertexExecutor) executeWithStrategy(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options, strategy VertexAuthStrategy) (resp provider.Response, err error) {
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
@@ -227,7 +156,6 @@ func (e *GeminiVertexExecutor) executeWithStrategy(ctx context.Context, auth *cl
 	if opts.Alt != "" && action != "countTokens" {
 		url = url + "?$alt=" + opts.Alt
 	}
-	// Delete session_id for API key auth (apiKeyStrategy)
 	if _, ok := strategy.(*apiKeyStrategy); ok {
 		body, _ = sjson.DeleteBytes(body, "session_id")
 	}
@@ -269,24 +197,20 @@ func (e *GeminiVertexExecutor) executeWithStrategy(ctx context.Context, auth *cl
 	}
 	reporter.publish(ctx, extractUsageFromGeminiResponse(data))
 
-	translatedResp, err := TranslateGeminiResponseNonStream(e.cfg, from, data, req.Model)
+	fromFormat := provider.FromString("gemini")
+	translatedResp, err := TranslateResponseNonStream(e.cfg, fromFormat, from, data, req.Model)
 	if err != nil {
 		return resp, err
 	}
 	if translatedResp != nil {
-		resp = cliproxyexecutor.Response{Payload: translatedResp}
+		resp = provider.Response{Payload: translatedResp}
 	} else {
-		resp = cliproxyexecutor.Response{Payload: data}
+		resp = provider.Response{Payload: data}
 	}
 	return resp, nil
 }
 
-// =============================================================================
-// ExecuteStream (Streaming)
-// =============================================================================
-
-// ExecuteStream handles SSE streaming for Vertex.
-func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
+func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (<-chan provider.StreamChunk, error) {
 	strategy, err := e.resolveStrategy(auth)
 	if err != nil {
 		return nil, err
@@ -294,7 +218,7 @@ func (e *GeminiVertexExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	return e.executeStreamWithStrategy(ctx, auth, req, opts, strategy)
 }
 
-func (e *GeminiVertexExecutor) executeStreamWithStrategy(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, strategy VertexAuthStrategy) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *GeminiVertexExecutor) executeStreamWithStrategy(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options, strategy VertexAuthStrategy) (stream <-chan provider.StreamChunk, err error) {
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
@@ -342,17 +266,12 @@ func (e *GeminiVertexExecutor) executeStreamWithStrategy(ctx context.Context, au
 		return nil, result.Error
 	}
 
-	// Create stream processor
+	streamCtx := NewStreamContext()
+	streamCtx.EstimatedInputTokens = translation.EstimatedInputTokens
+	translator := NewStreamTranslator(e.cfg, from, from.String(), req.Model, "chatcmpl-"+req.Model, streamCtx)
 	processor := &vertexStreamProcessor{
-		cfg:       e.cfg,
-		from:      from,
-		model:     req.Model,
-		messageID: "chatcmpl-" + req.Model,
-		streamState: &GeminiCLIStreamState{
-			ClaudeState: from_ir.NewClaudeStreamState(),
-		},
+		translator: translator,
 	}
-	processor.streamState.ClaudeState.EstimatedInputTokens = translation.EstimatedInputTokens
 
 	return RunSSEStream(ctx, httpResp.Body, reporter, processor, StreamConfig{
 		ExecutorName:     "vertex executor",
@@ -360,24 +279,19 @@ func (e *GeminiVertexExecutor) executeStreamWithStrategy(ctx context.Context, au
 	}), nil
 }
 
-// =============================================================================
-// CountTokens
-// =============================================================================
-
-// CountTokens calls Vertex countTokens endpoint.
-func (e *GeminiVertexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *GeminiVertexExecutor) CountTokens(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (provider.Response, error) {
 	strategy, err := e.resolveStrategy(auth)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 	return e.countTokensWithStrategy(ctx, auth, req, opts, strategy)
 }
 
-func (e *GeminiVertexExecutor) countTokensWithStrategy(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, strategy VertexAuthStrategy) (cliproxyexecutor.Response, error) {
+func (e *GeminiVertexExecutor) countTokensWithStrategy(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options, strategy VertexAuthStrategy) (provider.Response, error) {
 	from := opts.SourceFormat
 	translatedReq, err := TranslateToGemini(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 	translatedReq = util.StripThinkingConfigIfUnsupported(req.Model, translatedReq)
 	respCtx := context.WithValue(ctx, altContextKey{}, opts.Alt)
@@ -389,14 +303,14 @@ func (e *GeminiVertexExecutor) countTokensWithStrategy(ctx context.Context, auth
 
 	httpReq, errNewReq := http.NewRequestWithContext(respCtx, http.MethodPost, url, bytes.NewReader(translatedReq))
 	if errNewReq != nil {
-		return cliproxyexecutor.Response{}, errNewReq
+		return provider.Response{}, errNewReq
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	token, errTok := strategy.GetToken(ctx, e.cfg, auth)
 	if errTok != nil {
 		log.Errorf("vertex executor: access token error: %v", errTok)
-		return cliproxyexecutor.Response{}, NewStatusError(500, "internal server error", nil)
+		return provider.Response{}, NewStatusError(500, "internal server error", nil)
 	}
 	strategy.ApplyAuth(httpReq, token)
 	applyGeminiHeaders(httpReq, auth)
@@ -405,9 +319,9 @@ func (e *GeminiVertexExecutor) countTokensWithStrategy(ctx context.Context, auth
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
 		if errors.Is(errDo, context.DeadlineExceeded) {
-			return cliproxyexecutor.Response{}, NewTimeoutError("request timed out")
+			return provider.Response{}, NewTimeoutError("request timed out")
 		}
-		return cliproxyexecutor.Response{}, errDo
+		return provider.Response{}, errDo
 	}
 	defer func() {
 		if errClose := httpResp.Body.Close(); errClose != nil {
@@ -416,60 +330,50 @@ func (e *GeminiVertexExecutor) countTokensWithStrategy(ctx context.Context, auth
 	}()
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		result := HandleHTTPError(httpResp, "gemini-vertex executor")
-		return cliproxyexecutor.Response{}, result.Error
+		return provider.Response{}, result.Error
 	}
 	data, errRead := io.ReadAll(httpResp.Body)
 	if errRead != nil {
-		return cliproxyexecutor.Response{}, errRead
+		return provider.Response{}, errRead
 	}
-	count := gjson.GetBytes(data, "totalTokens").Int()
-	to := formatGemini
-	out := sdktranslator.TranslateTokenCount(ctx, to, from, count, data)
-	return cliproxyexecutor.Response{Payload: []byte(out)}, nil
+	return provider.Response{Payload: data}, nil
 }
 
-// Refresh is a no-op for service account based credentials.
-func (e *GeminiVertexExecutor) Refresh(_ context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+func (e *GeminiVertexExecutor) Refresh(_ context.Context, auth *provider.Auth) (*provider.Auth, error) {
 	return auth, nil
 }
 
-// =============================================================================
-// Stream Processor for Vertex
-// =============================================================================
-
-// vertexStreamProcessor implements StreamProcessor for Vertex AI streams.
 type vertexStreamProcessor struct {
-	cfg         *config.Config
-	from        sdktranslator.Format
-	model       string
-	messageID   string
-	streamState *GeminiCLIStreamState
+	translator *StreamTranslator
 }
 
-// ProcessLine implements StreamProcessor.ProcessLine.
 func (p *vertexStreamProcessor) ProcessLine(line []byte) ([][]byte, *ir.Usage, error) {
-	result, err := TranslateGeminiResponseStreamWithUsage(p.cfg, p.from, bytes.Clone(line), p.model, p.messageID, p.streamState)
+	var events []ir.UnifiedEvent
+	var err error
+	if p.translator.ctx.ToolSchemaCtx != nil {
+		events, err = to_ir.ParseGeminiChunkWithContext(line, p.translator.ctx.ToolSchemaCtx)
+	} else {
+		events, err = to_ir.ParseGeminiChunk(line)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(events) == 0 {
+		return nil, nil, nil
+	}
+
+	result, err := p.translator.Translate(events)
 	if err != nil {
 		return nil, nil, err
 	}
 	return result.Chunks, result.Usage, nil
 }
 
-// ProcessDone implements StreamProcessor.ProcessDone.
 func (p *vertexStreamProcessor) ProcessDone() ([][]byte, error) {
-	result, err := TranslateGeminiResponseStreamWithUsage(p.cfg, p.from, []byte("[DONE]"), p.model, p.messageID, p.streamState)
-	if err != nil {
-		return nil, err
-	}
-	return result.Chunks, nil
+	return p.translator.Flush(), nil
 }
 
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-// vertexCreds extracts project, location and raw service account JSON from auth metadata.
-func vertexCreds(a *cliproxyauth.Auth) (projectID, location string, serviceAccountJSON []byte, err error) {
+func vertexCreds(a *provider.Auth) (projectID, location string, serviceAccountJSON []byte, err error) {
 	if a == nil || a.Metadata == nil {
 		return "", "", nil, fmt.Errorf("vertex executor: missing auth metadata")
 	}
@@ -477,7 +381,6 @@ func vertexCreds(a *cliproxyauth.Auth) (projectID, location string, serviceAccou
 		projectID = strings.TrimSpace(v)
 	}
 	if projectID == "" {
-		// Some service accounts may use "project"; still prefer standard field
 		if v, ok := a.Metadata["project"].(string); ok {
 			projectID = strings.TrimSpace(v)
 		}
@@ -508,8 +411,7 @@ func vertexCreds(a *cliproxyauth.Auth) (projectID, location string, serviceAccou
 	return projectID, location, saJSON, nil
 }
 
-// vertexAPICreds extracts API key and base URL from auth attributes following the claudeCreds pattern.
-func vertexAPICreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
+func vertexAPICreds(a *provider.Auth) (apiKey, baseURL string) {
 	if a == nil {
 		return "", ""
 	}
@@ -539,11 +441,10 @@ func vertexBaseURL(location string) string {
 	return ub.String()
 }
 
-func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, saJSON []byte) (string, error) {
+func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *provider.Auth, saJSON []byte) (string, error) {
 	if httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0); httpClient != nil {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	}
-	// Use cloud-platform scope for Vertex AI.
 	creds, errCreds := google.CredentialsFromJSON(ctx, saJSON, "https://www.googleapis.com/auth/cloud-platform")
 	if errCreds != nil {
 		return "", fmt.Errorf("vertex executor: parse service account json failed: %w", errCreds)
@@ -555,13 +456,7 @@ func vertexAccessToken(ctx context.Context, cfg *config.Config, auth *cliproxyau
 	return tok.AccessToken, nil
 }
 
-// =============================================================================
-// Dynamic Model Fetching
-// =============================================================================
-
-// FetchVertexModels retrieves available models from Vertex AI.
-// Supports both API key and service account authentication.
-func FetchVertexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+func FetchVertexModels(ctx context.Context, auth *provider.Auth, cfg *config.Config) []*registry.ModelInfo {
 	exec := &GeminiVertexExecutor{cfg: cfg}
 	strategy, err := exec.resolveStrategy(auth)
 	if err != nil {
@@ -569,7 +464,6 @@ func FetchVertexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 		return nil
 	}
 
-	// For API key mode, use GL API endpoint
 	if apiStrategy, ok := strategy.(*apiKeyStrategy); ok {
 		httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
 
@@ -582,8 +476,5 @@ func FetchVertexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 		return FetchGLAPIModels(ctx, httpClient, fetchCfg)
 	}
 
-	// For service account mode, use Vertex AI endpoint
-	// Note: Vertex AI list models endpoint is different and more complex
-	// For now, fall back to static models for SA mode
 	return nil
 }

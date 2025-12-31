@@ -9,10 +9,9 @@ import (
 	"testing"
 
 	gin "github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/access"
 	proxyconfig "github.com/nghyane/llm-mux/internal/config"
-	sdkaccess "github.com/nghyane/llm-mux/sdk/access"
-	"github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	sdkconfig "github.com/nghyane/llm-mux/sdk/config"
+	"github.com/nghyane/llm-mux/internal/provider"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -27,7 +26,7 @@ func newTestServer(t *testing.T) *Server {
 	}
 
 	cfg := &proxyconfig.Config{
-		SDKConfig: sdkconfig.SDKConfig{
+		SDKConfig: proxyconfig.SDKConfig{
 			APIKeys: []string{"test-key"},
 		},
 		Port:                   0,
@@ -37,8 +36,8 @@ func newTestServer(t *testing.T) *Server {
 		UsageStatisticsEnabled: false,
 	}
 
-	authManager := auth.NewManager(nil, nil, nil)
-	accessManager := sdkaccess.NewManager()
+	authManager := provider.NewManager(nil, nil, nil)
+	accessManager := access.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	return NewServer(cfg, authManager, accessManager, configPath)

@@ -221,18 +221,31 @@ func (qa *QwenAuth) InitiateDeviceFlow(ctx context.Context) (*DeviceFlow, error)
 }
 
 // PollForToken polls the token endpoint with the device code to obtain an access token.
-func (qa *QwenAuth) PollForToken(deviceCode, codeVerifier string) (*QwenTokenData, error) {
+// It respects context cancellation for graceful shutdown.
+func (qa *QwenAuth) PollForToken(ctx context.Context, deviceCode, codeVerifier string) (*QwenTokenData, error) {
 	pollInterval := 2 * time.Second // Qwen official SDK uses 2 seconds
 	maxAttempts := 150              // 5 minutes max (150 * 2s = 300s)
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		data := url.Values{}
 		data.Set("grant_type", QwenOAuthGrantType)
 		data.Set("client_id", QwenOAuthClientID)
 		data.Set("device_code", deviceCode)
 		data.Set("code_verifier", codeVerifier)
 
-		resp, err := http.PostForm(QwenOAuthTokenEndpoint, data)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, QwenOAuthTokenEndpoint, strings.NewReader(data.Encode()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create token request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := qa.httpClient.Do(req)
 		if err != nil {
 			fmt.Printf("Polling attempt %d/%d failed: %v\n", attempt+1, maxAttempts, err)
 			time.Sleep(pollInterval)

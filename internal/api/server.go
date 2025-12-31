@@ -18,26 +18,25 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nghyane/llm-mux/internal/access"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format"
 	managementHandlers "github.com/nghyane/llm-mux/internal/api/handlers/management"
 	"github.com/nghyane/llm-mux/internal/api/middleware"
 	"github.com/nghyane/llm-mux/internal/api/modules"
 	ampmodule "github.com/nghyane/llm-mux/internal/api/modules/amp"
 	"github.com/nghyane/llm-mux/internal/config"
 	"github.com/nghyane/llm-mux/internal/logging"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/registry"
 	"github.com/nghyane/llm-mux/internal/usage"
 	"github.com/nghyane/llm-mux/internal/util"
-	sdkaccess "github.com/nghyane/llm-mux/sdk/access"
-	"github.com/nghyane/llm-mux/sdk/api/handlers"
-	"github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"gopkg.in/yaml.v3"
 )
 
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
 	engineConfigurator   func(*gin.Engine)
-	routerConfigurator   func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+	routerConfigurator   func(*gin.Engine, *format.BaseAPIHandler, *config.Config)
 	requestLoggerFactory func(*config.Config, string) logging.RequestLogger
 	localPassword        string
 	keepAliveEnabled     bool
@@ -71,7 +70,7 @@ func WithEngineConfigurator(fn func(*gin.Engine)) ServerOption {
 }
 
 // WithRouterConfigurator appends a callback after default routes are registered.
-func WithRouterConfigurator(fn func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)) ServerOption {
+func WithRouterConfigurator(fn func(*gin.Engine, *format.BaseAPIHandler, *config.Config)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.routerConfigurator = fn
 	}
@@ -107,13 +106,13 @@ func WithRequestLoggerFactory(factory func(*config.Config, string) logging.Reque
 type Server struct {
 	engine   *gin.Engine
 	server   *http.Server
-	handlers *handlers.BaseAPIHandler
+	handlers *format.BaseAPIHandler
 	cfg      *config.Config
 
 	// oldConfigYaml stores YAML snapshot for change detection (avoids in-place mutation issues).
 	oldConfigYaml []byte
 
-	accessManager  *sdkaccess.Manager
+	accessManager  *access.Manager
 	requestLogger  logging.RequestLogger
 	loggerToggle   func(bool)
 	configFilePath string
@@ -147,7 +146,7 @@ type Server struct {
 //
 // Returns:
 //   - *Server: A new server instance
-func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
+func NewServer(cfg *config.Config, authManager *provider.Manager, accessManager *access.Manager, configFilePath string, opts ...ServerOption) *Server {
 	optionState := &serverOptionConfig{
 		requestLoggerFactory: defaultRequestLoggerFactory,
 	}
@@ -197,7 +196,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	s := &Server{
 		engine:         engine,
-		handlers:       handlers.NewBaseAPIHandlers(&cfg.SDKConfig, authManager, providerNames),
+		handlers:       format.NewBaseAPIHandlers(&cfg.SDKConfig, authManager, providerNames),
 		cfg:            cfg,
 		accessManager:  accessManager,
 		requestLogger:  requestLogger,
@@ -213,7 +212,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	if authManager != nil {
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second)
 	}
-	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+	provider.SetQuotaCooldownDisabled(cfg.DisableCooling)
 
 	// Initialize provider prefix display setting in model registry
 	registry.GetGlobalRegistry().SetShowProviderPrefixes(cfg.ShowProviderPrefixes)
@@ -391,7 +390,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 
 	if oldCfg == nil || oldCfg.DisableCooling != cfg.DisableCooling {
-		auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+		provider.SetQuotaCooldownDisabled(cfg.DisableCooling)
 		if oldCfg != nil {
 			log.Debugf("disable_cooling updated from %t to %t", oldCfg.DisableCooling, cfg.DisableCooling)
 		} else {

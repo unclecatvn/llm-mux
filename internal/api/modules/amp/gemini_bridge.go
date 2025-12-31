@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/gemini"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/gemini"
 )
 
 // createGeminiBridgeHandler creates a handler that bridges AMP CLI's non-standard Gemini paths

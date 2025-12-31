@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nghyane/llm-mux/sdk/api/handlers"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format"
 )
 
 // closeNotifierRecorder wraps httptest.ResponseRecorder to implement http.CloseNotifier
@@ -49,7 +49,7 @@ func TestRegisterManagementRoutes(t *testing.T) {
 	proxy, _ := createReverseProxy(mockProxy.URL, NewStaticSecretSource(""))
 	m.setProxy(proxy)
 
-	base := &handlers.BaseAPIHandler{}
+	base := &format.BaseAPIHandler{}
 	m.registerManagementRoutes(r, base)
 
 	managementPaths := []struct {
@@ -99,7 +99,7 @@ func TestRegisterProviderAliases_AllProvidersRegistered(t *testing.T) {
 	r := gin.New()
 
 	// Minimal base handler setup (no need to initialize, just check routing)
-	base := &handlers.BaseAPIHandler{}
+	base := &format.BaseAPIHandler{}
 
 	// Track if auth middleware was called
 	authCalled := false
@@ -150,7 +150,7 @@ func TestRegisterProviderAliases_DynamicModelsHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	base := &handlers.BaseAPIHandler{}
+	base := &format.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }}
 	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })
@@ -176,7 +176,7 @@ func TestRegisterProviderAliases_V1Routes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	base := &handlers.BaseAPIHandler{}
+	base := &format.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }}
 	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })
@@ -209,7 +209,7 @@ func TestRegisterProviderAliases_V1BetaRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	base := &handlers.BaseAPIHandler{}
+	base := &format.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) }}
 	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })
@@ -240,7 +240,7 @@ func TestRegisterProviderAliases_NoAuthMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	base := &handlers.BaseAPIHandler{}
+	base := &format.BaseAPIHandler{}
 
 	m := &AmpModule{authMiddleware_: nil} // No auth middleware
 	m.registerProviderAliases(r, base, func(c *gin.Context) { c.AbortWithStatus(http.StatusOK) })

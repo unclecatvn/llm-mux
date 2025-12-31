@@ -12,8 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nghyane/llm-mux/internal/translator/ir"
-	coreusage "github.com/nghyane/llm-mux/sdk/cliproxy/usage"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 var statisticsEnabled atomic.Bool
@@ -21,7 +20,7 @@ var statisticsEnabled atomic.Bool
 func init() {
 	statisticsEnabled.Store(true)
 	defaultLoggerPlugin = NewLoggerPlugin()
-	coreusage.RegisterPlugin(defaultLoggerPlugin)
+	RegisterPlugin(defaultLoggerPlugin)
 }
 
 // LoggerPlugin collects in-memory request statistics for usage analysis.
@@ -41,7 +40,7 @@ func NewLoggerPlugin() *LoggerPlugin { return &LoggerPlugin{stats: defaultReques
 // Parameters:
 //   - ctx: The context for the usage record
 //   - record: The usage record to aggregate
-func (p *LoggerPlugin) HandleUsage(ctx context.Context, record coreusage.Record) {
+func (p *LoggerPlugin) HandleUsage(ctx context.Context, record Record) {
 	if !statisticsEnabled.Load() {
 		return
 	}
@@ -246,7 +245,7 @@ func NewRequestStatistics() *RequestStatistics {
 }
 
 // Record ingests a new usage record and updates the aggregates.
-func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record) {
+func (s *RequestStatistics) Record(ctx context.Context, record Record) {
 	if s == nil {
 		return
 	}
@@ -412,7 +411,7 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 	return result
 }
 
-func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
+func resolveAPIIdentifier(ctx context.Context, record Record) string {
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
 			path := ginCtx.FullPath()

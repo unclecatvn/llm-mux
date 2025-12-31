@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/auth/login"
 	"github.com/nghyane/llm-mux/internal/oauth"
-	sdkAuth "github.com/nghyane/llm-mux/sdk/auth"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	"github.com/nghyane/llm-mux/internal/provider"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/tidwall/gjson"
 )
 
@@ -158,13 +158,13 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 	c.JSON(200, gin.H{"files": files})
 }
 
-func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
+func (h *Handler) buildAuthFileEntry(auth *provider.Auth) gin.H {
 	if auth == nil {
 		return nil
 	}
 	auth.EnsureIndex()
 	runtimeOnly := isRuntimeOnlyAuth(auth)
-	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
+	if runtimeOnly && (auth.Disabled || auth.Status == provider.StatusDisabled) {
 		return nil
 	}
 	path := strings.TrimSpace(authAttribute(auth, "path"))
@@ -219,7 +219,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["modtime"] = info.ModTime()
 		} else if os.IsNotExist(err) {
 			// Hide credentials removed from disk but still lingering in memory.
-			if !runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled || strings.EqualFold(strings.TrimSpace(auth.StatusMessage), "removed via management api")) {
+			if !runtimeOnly && (auth.Disabled || auth.Status == provider.StatusDisabled || strings.EqualFold(strings.TrimSpace(auth.StatusMessage), "removed via management api")) {
 				return nil
 			}
 			entry["source"] = "memory"
@@ -230,7 +230,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	return entry
 }
 
-func authEmail(auth *coreauth.Auth) string {
+func authEmail(auth *provider.Auth) string {
 	if auth == nil {
 		return ""
 	}
@@ -250,14 +250,14 @@ func authEmail(auth *coreauth.Auth) string {
 	return ""
 }
 
-func authAttribute(auth *coreauth.Auth, key string) string {
+func authAttribute(auth *provider.Auth, key string) string {
 	if auth == nil || len(auth.Attributes) == 0 {
 		return ""
 	}
 	return auth.Attributes[key]
 }
 
-func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
+func isRuntimeOnlyAuth(auth *provider.Auth) bool {
 	if auth == nil || len(auth.Attributes) == 0 {
 		return false
 	}
@@ -460,11 +460,11 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return fmt.Errorf("invalid auth file: %w", err)
 	}
-	provider, _ := metadata["type"].(string)
-	if provider == "" {
-		provider = "unknown"
+	providerType, _ := metadata["type"].(string)
+	if providerType == "" {
+		providerType = "unknown"
 	}
-	label := provider
+	label := providerType
 	if email, ok := metadata["email"].(string); ok && email != "" {
 		label = email
 	}
@@ -478,12 +478,12 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 		"path":   path,
 		"source": path,
 	}
-	auth := &coreauth.Auth{
+	auth := &provider.Auth{
 		ID:         authID,
-		Provider:   provider,
+		Provider:   providerType,
 		FileName:   filepath.Base(path),
 		Label:      label,
-		Status:     coreauth.StatusActive,
+		Status:     provider.StatusActive,
 		Attributes: attr,
 		Metadata:   metadata,
 		CreatedAt:  time.Now(),
@@ -519,7 +519,7 @@ func (h *Handler) disableAuth(ctx context.Context, id string) {
 	}
 	if auth, ok := h.authManager.GetByID(authID); ok {
 		auth.Disabled = true
-		auth.Status = coreauth.StatusDisabled
+		auth.Status = provider.StatusDisabled
 		auth.StatusMessage = "removed via management API"
 		auth.UpdatedAt = time.Now()
 		_, _ = h.authManager.Update(ctx, auth)
@@ -537,13 +537,13 @@ func (h *Handler) deleteTokenRecord(ctx context.Context, path string) error {
 	return store.Delete(ctx, path)
 }
 
-func (h *Handler) tokenStoreWithBaseDir() coreauth.Store {
+func (h *Handler) tokenStoreWithBaseDir() provider.Store {
 	if h == nil {
 		return nil
 	}
 	store := h.tokenStore
 	if store == nil {
-		store = sdkAuth.GetTokenStore()
+		store = login.GetTokenStore()
 		h.tokenStore = store
 	}
 	if h.cfg != nil {
@@ -554,7 +554,7 @@ func (h *Handler) tokenStoreWithBaseDir() coreauth.Store {
 	return store
 }
 
-func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (string, error) {
+func (h *Handler) saveTokenRecord(ctx context.Context, record *provider.Auth) (string, error) {
 	if record == nil {
 		return "", fmt.Errorf("token record is nil")
 	}

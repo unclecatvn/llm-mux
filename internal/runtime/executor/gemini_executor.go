@@ -1,6 +1,3 @@
-// Package executor provides runtime execution capabilities for various AI service providers.
-// It includes stateless executors that handle API requests, streaming responses,
-// token counting, and authentication refresh for different AI service providers.
 package executor
 
 import (
@@ -15,57 +12,57 @@ import (
 	"time"
 
 	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/registry"
-	"github.com/nghyane/llm-mux/internal/translator/from_ir"
+	"github.com/nghyane/llm-mux/internal/translator/ir"
+	"github.com/nghyane/llm-mux/internal/translator/to_ir"
 	"github.com/nghyane/llm-mux/internal/util"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
-	sdktranslator "github.com/nghyane/llm-mux/sdk/translator"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"github.com/tidwall/sjson"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
-// GeminiExecutor is a stateless executor for the official Gemini API using API keys.
 type GeminiExecutor struct {
 	cfg *config.Config
 }
 
-// NewGeminiExecutor creates a new Gemini executor instance.
-// Parameters:
-//   - cfg: The application configuration
-//
-// Returns:
-//   - *GeminiExecutor: A new Gemini executor instance
 func NewGeminiExecutor(cfg *config.Config) *GeminiExecutor { return &GeminiExecutor{cfg: cfg} }
 
-// Identifier returns the executor identifier for Gemini.
+type geminiStreamProcessor struct {
+	translator *StreamTranslator
+}
+
+func (p *geminiStreamProcessor) ProcessLine(line []byte) ([][]byte, *ir.Usage, error) {
+	events, err := to_ir.ParseGeminiChunk(line)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(events) == 0 {
+		return nil, nil, nil
+	}
+
+	result, err := p.translator.Translate(events)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result.Chunks, result.Usage, nil
+}
+
+func (p *geminiStreamProcessor) ProcessDone() ([][]byte, error) {
+	return p.translator.Flush(), nil
+}
+
 func (e *GeminiExecutor) Identifier() string { return "gemini" }
 
-// PrepareRequest prepares the HTTP request for execution (no-op for Gemini).
-func (e *GeminiExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error { return nil }
+func (e *GeminiExecutor) PrepareRequest(_ *http.Request, _ *provider.Auth) error { return nil }
 
-// Execute performs a non-streaming request to the Gemini API.
-// It translates the request to Gemini format, sends it to the API, and translates
-// the response back to the requested format.
-// Parameters:
-//   - ctx: The context for the request
-//   - auth: The authentication information
-//   - req: The request to execute
-//   - opts: Additional execution options
-//
-// Returns:
-//   - cliproxyexecutor.Response: The response from the API
-//   - error: An error if the request fails
-func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+func (e *GeminiExecutor) Execute(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (resp provider.Response, err error) {
 	apiKey, bearer := geminiCreds(auth)
 
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	// Official Gemini API via API key or OAuth bearer
 	from := opts.SourceFormat
 	body, err := TranslateToGemini(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
@@ -137,19 +134,20 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	reporter.publish(ctx, extractUsageFromGeminiResponse(data))
 
-	translatedResp, err := TranslateGeminiResponseNonStream(e.cfg, from, data, req.Model)
+	fromFormat := provider.FromString("gemini")
+	translatedResp, err := TranslateResponseNonStream(e.cfg, fromFormat, from, data, req.Model)
 	if err != nil {
 		return resp, err
 	}
 	if translatedResp != nil {
-		resp = cliproxyexecutor.Response{Payload: translatedResp}
+		resp = provider.Response{Payload: translatedResp}
 	} else {
-		resp = cliproxyexecutor.Response{Payload: data}
+		resp = provider.Response{Payload: data}
 	}
 	return resp, nil
 }
 
-func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (stream <-chan provider.StreamChunk, err error) {
 	apiKey, bearer := geminiCreds(auth)
 
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
@@ -157,7 +155,6 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	from := opts.SourceFormat
 
-	// Translate request and count tokens in one operation (uses shared IR)
 	translation, err := TranslateToGeminiWithTokens(e.cfg, from, req.Model, req.Payload, true, req.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("translate request: %w", err)
@@ -215,14 +212,18 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		_ = httpResp.Body.Close()
 		return nil, result.Error
 	}
-	out := make(chan cliproxyexecutor.StreamChunk, 8)
+	out := make(chan provider.StreamChunk, 32)
 	stream = out
 
-	// Use pre-calculated input tokens from translation
 	estimatedInputTokens := translation.EstimatedInputTokens
 
 	go func() {
 		defer close(out)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("gemini executor: panic in stream goroutine: %v", r)
+			}
+		}()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("gemini executor: close response body error: %v", errClose)
@@ -232,14 +233,15 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		defer scannerBufferPool.Put(buf)
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(buf, DefaultStreamBufferSize)
-		streamState := &GeminiCLIStreamState{
-			ClaudeState: from_ir.NewClaudeStreamState(),
+		streamCtx := NewStreamContext()
+		streamCtx.EstimatedInputTokens = estimatedInputTokens
+		messageID := "chatcmpl-" + req.Model
+		translator := NewStreamTranslator(e.cfg, from, from.String(), req.Model, messageID, streamCtx)
+		processor := &geminiStreamProcessor{
+			translator: translator,
 		}
-		// Set pre-calculated input tokens for message_start
-		streamState.ClaudeState.EstimatedInputTokens = estimatedInputTokens
 
 		for scanner.Scan() {
-			// Check context cancellation before processing each line
 			select {
 			case <-ctx.Done():
 				return
@@ -253,21 +255,29 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				continue
 			}
 
-			messageID := "chatcmpl-" + req.Model
-			result, err := TranslateGeminiResponseStreamWithUsage(e.cfg, from, bytes.Clone(payload), req.Model, messageID, streamState)
+			chunks, usage, err := processor.ProcessLine(bytes.Clone(payload))
 			if err != nil {
+				if flushed, _ := processor.ProcessDone(); len(flushed) > 0 {
+					for _, chunk := range flushed {
+						select {
+						case out <- provider.StreamChunk{Payload: chunk}:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Err: err}:
+				case out <- provider.StreamChunk{Err: err}:
 				case <-ctx.Done():
 				}
 				return
 			}
-			if result.Usage != nil {
-				reporter.publish(ctx, result.Usage)
+			if usage != nil {
+				reporter.publish(ctx, usage)
 			}
-			for _, chunk := range result.Chunks {
+			for _, chunk := range chunks {
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
+				case out <- provider.StreamChunk{Payload: chunk}:
 				case <-ctx.Done():
 					return
 				}
@@ -276,27 +286,36 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if errScan := scanner.Err(); errScan != nil {
 			reporter.publishFailure(ctx)
 			select {
-			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
+			case out <- provider.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
+			}
+			return
+		}
+		if flushed, _ := processor.ProcessDone(); len(flushed) > 0 {
+			for _, chunk := range flushed {
+				select {
+				case out <- provider.StreamChunk{Payload: chunk}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
 	return stream, nil
 }
 
-func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (provider.Response, error) {
 	apiKey, bearer := geminiCreds(auth)
 
 	from := opts.SourceFormat
 	translatedReq, err := TranslateToGemini(e.cfg, from, req.Model, req.Payload, false, req.Metadata)
 	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("translate request: %w", err)
+		return provider.Response{}, fmt.Errorf("translate request: %w", err)
 	}
 	if budgetOverride, includeOverride, ok := util.GeminiThinkingFromMetadata(req.Metadata); ok && util.ModelSupportsThinking(req.Model) {
 		translatedReq = util.ApplyGeminiThinkingConfig(translatedReq, budgetOverride, includeOverride)
 	}
 	translatedReq = util.StripThinkingConfigIfUnsupported(req.Model, translatedReq)
-	respCtx := context.WithValue(ctx, altContextKey{}, opts.Alt)
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "tools")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "generationConfig")
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
@@ -317,7 +336,7 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, requestBody)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
@@ -331,37 +350,31 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return cliproxyexecutor.Response{}, NewTimeoutError("request timed out")
+			return provider.Response{}, NewTimeoutError("request timed out")
 		}
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return cliproxyexecutor.Response{}, err
+		return provider.Response{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// For CountTokens, we already have the data, so create categorized error directly
 		log.Debugf("gemini executor: error status: %d, body: %s", resp.StatusCode, summarizeErrorBody(resp.Header.Get("Content-Type"), data))
-		return cliproxyexecutor.Response{}, NewStatusError(resp.StatusCode, string(data), nil)
+		return provider.Response{}, NewStatusError(resp.StatusCode, string(data), nil)
 	}
 
-	count := gjson.GetBytes(data, "totalTokens").Int()
-	formatGemini := sdktranslator.FromString("gemini")
-	translated := sdktranslator.TranslateTokenCount(respCtx, formatGemini, from, count, data)
-	return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
+	return provider.Response{Payload: data}, nil
 }
 
-func (e *GeminiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	// OAuth bearer token refresh for official Gemini API.
+func (e *GeminiExecutor) Refresh(ctx context.Context, auth *provider.Auth) (*provider.Auth, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("gemini executor: auth is nil")
 	}
 	if auth.Metadata == nil {
 		return auth, nil
 	}
-	// Token data is typically nested under "token" map in Gemini files.
 	tokenMap, _ := auth.Metadata["token"].(map[string]any)
 	var refreshToken, accessToken, clientID, clientSecret, tokenURI, expiryStr string
 	if tokenMap != nil {
@@ -384,7 +397,6 @@ func (e *GeminiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 			expiryStr = v
 		}
 	} else {
-		// Fallback to top-level keys if present
 		if v, ok := auth.Metadata["refresh_token"].(string); ok {
 			refreshToken = v
 		}
@@ -405,18 +417,15 @@ func (e *GeminiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 		}
 	}
 	if refreshToken == "" {
-		// Nothing to do for API key or cookie based entries
 		return auth, nil
 	}
 
-	// Prepare oauth2 config; default to Google endpoints
 	endpoint := google.Endpoint
 	if tokenURI != "" {
 		endpoint.TokenURL = tokenURI
 	}
 	conf := &oauth2.Config{ClientID: clientID, ClientSecret: clientSecret, Endpoint: endpoint}
 
-	// Ensure proxy-aware HTTP client for token refresh
 	httpClient := util.SetProxy(&e.cfg.SDKConfig, &http.Client{})
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
@@ -429,7 +438,6 @@ func (e *GeminiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 		return nil, err
 	}
 
-	// Persist back to metadata; prefer nested token map if present
 	if tokenMap == nil {
 		tokenMap = make(map[string]any)
 	}
@@ -447,19 +455,14 @@ func (e *GeminiExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 	}
 	auth.Metadata["token"] = tokenMap
 
-	// Also mirror top-level access_token for compatibility if previously present
 	if _, ok := auth.Metadata["access_token"]; ok {
 		auth.Metadata["access_token"] = newTok.AccessToken
 	}
 	return auth, nil
 }
 
-// geminiCreds extracts credentials for Gemini API.
-// Returns (apiKey, bearer) for compatibility with existing Gemini executor logic.
-// Delegates to the common ExtractCreds function with Gemini configuration.
-func geminiCreds(a *cliproxyauth.Auth) (apiKey, bearer string) {
+func geminiCreds(a *provider.Auth) (apiKey, bearer string) {
 	token, _ := ExtractCreds(a, GeminiCredsConfig)
-	// For Gemini, the extracted token becomes the bearer, and apiKey comes from attributes
 	if a != nil && a.Attributes != nil {
 		apiKey = a.Attributes["api_key"]
 	}
@@ -467,10 +470,10 @@ func geminiCreds(a *cliproxyauth.Auth) (apiKey, bearer string) {
 	return
 }
 
-func resolveGeminiBaseURL(auth *cliproxyauth.Auth) string {
+func resolveGeminiBaseURL(auth *provider.Auth) string {
 	base := GeminiDefaultBaseURL
-	if auth != nil && auth.Attributes != nil {
-		if custom := strings.TrimSpace(auth.Attributes["base_url"]); custom != "" {
+	if auth != nil {
+		if custom := AttrStringValue(auth.Attributes, "base_url"); custom != "" {
 			base = strings.TrimRight(custom, "/")
 		}
 	}
@@ -480,7 +483,7 @@ func resolveGeminiBaseURL(auth *cliproxyauth.Auth) string {
 	return base
 }
 
-func applyGeminiHeaders(req *http.Request, auth *cliproxyauth.Auth) {
+func applyGeminiHeaders(req *http.Request, auth *provider.Auth) {
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -488,13 +491,7 @@ func applyGeminiHeaders(req *http.Request, auth *cliproxyauth.Auth) {
 	util.ApplyCustomHeadersFromAttrs(req, attrs)
 }
 
-// =============================================================================
-// Dynamic Model Fetching
-// =============================================================================
-
-// FetchGeminiModels retrieves available models from the Generative Language API.
-// Uses API key or OAuth bearer token authentication.
-func FetchGeminiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+func FetchGeminiModels(ctx context.Context, auth *provider.Auth, cfg *config.Config) []*registry.ModelInfo {
 	apiKey, bearer := geminiCreds(auth)
 	if apiKey == "" && bearer == "" {
 		return nil

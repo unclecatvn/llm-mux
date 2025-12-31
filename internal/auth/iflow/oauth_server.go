@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 const errorRedirectURL = "https://iflow.cn/oauth/error"

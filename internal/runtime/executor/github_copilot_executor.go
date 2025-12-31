@@ -13,13 +13,11 @@ import (
 	"github.com/google/uuid"
 	copilotauth "github.com/nghyane/llm-mux/internal/auth/copilot"
 	"github.com/nghyane/llm-mux/internal/config"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/nghyane/llm-mux/sdk/cliproxy/executor"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/tidwall/sjson"
 	"golang.org/x/sync/singleflight"
 )
 
-// GitHubCopilotExecutor handles requests to the GitHub Copilot API.
 type GitHubCopilotExecutor struct {
 	cfg     *config.Config
 	mu      sync.RWMutex
@@ -33,19 +31,14 @@ type cachedCopilotToken struct {
 }
 
 func NewGitHubCopilotExecutor(cfg *config.Config) *GitHubCopilotExecutor {
-	return &GitHubCopilotExecutor{
-		cfg:   cfg,
-		cache: make(map[string]*cachedCopilotToken),
-	}
+	return &GitHubCopilotExecutor{cfg: cfg, cache: make(map[string]*cachedCopilotToken)}
 }
 
 func (e *GitHubCopilotExecutor) Identifier() string { return GitHubCopilotAuthType }
 
-func (e *GitHubCopilotExecutor) PrepareRequest(_ *http.Request, _ *cliproxyauth.Auth) error {
-	return nil
-}
+func (e *GitHubCopilotExecutor) PrepareRequest(_ *http.Request, _ *provider.Auth) error { return nil }
 
-func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (resp provider.Response, err error) {
 	apiToken, errToken := e.ensureAPIToken(ctx, auth)
 	if errToken != nil {
 		return resp, errToken
@@ -55,7 +48,6 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 	defer reporter.trackFailure(ctx, &err)
 
 	from := opts.SourceFormat
-	// Translate to OpenAI format (Copilot uses OpenAI-compatible API)
 	body, errTranslate := TranslateToOpenAI(e.cfg, from, req.Model, req.Payload, false, nil)
 	if errTranslate != nil {
 		return resp, errTranslate
@@ -95,21 +87,21 @@ func (e *GitHubCopilotExecutor) Execute(ctx context.Context, auth *cliproxyauth.
 		reporter.publish(ctx, detail)
 	}
 
-	// Translate response back from OpenAI format to source format
-	translatedResp, errTranslate := TranslateOpenAIResponseNonStream(e.cfg, from, data, req.Model)
+	fromOpenAI := provider.FromString("openai")
+	translatedResp, errTranslate := TranslateResponseNonStream(e.cfg, fromOpenAI, from, data, req.Model)
 	if errTranslate != nil {
 		return resp, errTranslate
 	}
 	if translatedResp != nil {
-		resp = cliproxyexecutor.Response{Payload: translatedResp}
+		resp = provider.Response{Payload: translatedResp}
 	} else {
-		resp = cliproxyexecutor.Response{Payload: data}
+		resp = provider.Response{Payload: data}
 	}
 	reporter.ensurePublished(ctx)
 	return resp, nil
 }
 
-func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *provider.Auth, req provider.Request, opts provider.Options) (stream <-chan provider.StreamChunk, err error) {
 	apiToken, errToken := e.ensureAPIToken(ctx, auth)
 	if errToken != nil {
 		return nil, errToken
@@ -159,16 +151,16 @@ func (e *GitHubCopilotExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	}), nil
 }
 
-func (e *GitHubCopilotExecutor) CountTokens(_ context.Context, _ *cliproxyauth.Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return cliproxyexecutor.Response{}, NewStatusError(http.StatusNotImplemented, "count tokens not supported for github-copilot", nil)
+func (e *GitHubCopilotExecutor) CountTokens(_ context.Context, _ *provider.Auth, _ provider.Request, _ provider.Options) (provider.Response, error) {
+	return provider.Response{}, NewStatusError(http.StatusNotImplemented, "count tokens not supported for github-copilot", nil)
 }
 
-func (e *GitHubCopilotExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+func (e *GitHubCopilotExecutor) Refresh(ctx context.Context, auth *provider.Auth) (*provider.Auth, error) {
 	if auth == nil {
 		return nil, NewStatusError(http.StatusUnauthorized, "missing auth", nil)
 	}
 
-	accessToken := metaStringValue(auth.Metadata, "access_token")
+	accessToken := MetaStringValue(auth.Metadata, "access_token")
 	if accessToken == "" {
 		return auth, nil
 	}
@@ -182,17 +174,16 @@ func (e *GitHubCopilotExecutor) Refresh(ctx context.Context, auth *cliproxyauth.
 	return auth, nil
 }
 
-func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
+func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *provider.Auth) (string, error) {
 	if auth == nil {
 		return "", NewStatusError(http.StatusUnauthorized, "missing auth", nil)
 	}
 
-	accessToken := metaStringValue(auth.Metadata, "access_token")
+	accessToken := MetaStringValue(auth.Metadata, "access_token")
 	if accessToken == "" {
 		return "", NewStatusError(http.StatusUnauthorized, "missing github access token", nil)
 	}
 
-	// Check cache first
 	e.mu.RLock()
 	if cached, ok := e.cache[accessToken]; ok && cached.expiresAt.After(time.Now().Add(TokenExpiryBuffer)) {
 		e.mu.RUnlock()
@@ -200,9 +191,7 @@ func (e *GitHubCopilotExecutor) ensureAPIToken(ctx context.Context, auth *clipro
 	}
 	e.mu.RUnlock()
 
-	// Use singleflight to prevent cache stampede: only one goroutine fetches token while others wait
 	result, err, _ := e.sfGroup.Do(accessToken, func() (interface{}, error) {
-		// Check cache again in case another goroutine just filled it
 		e.mu.RLock()
 		if cached, ok := e.cache[accessToken]; ok && cached.expiresAt.After(time.Now().Add(TokenExpiryBuffer)) {
 			e.mu.RUnlock()

@@ -11,7 +11,6 @@ import (
 	"github.com/nghyane/llm-mux/internal/translator/ir"
 )
 
-// ParseOpenAIRequest parses incoming OpenAI request from client into unified format.
 func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 	root, err := ir.ParseAndValidateJSON(rawJSON)
 	if err != nil {
@@ -23,48 +22,8 @@ func ParseOpenAIRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 		Metadata: make(map[string]any, 8),
 	}
 
-	if v := root.Get("temperature"); v.Exists() {
-		req.Temperature = ir.Ptr(v.Float())
-	}
-	if v := root.Get("top_p"); v.Exists() {
-		req.TopP = ir.Ptr(v.Float())
-	}
-	if v := root.Get("top_k"); v.Exists() {
-		req.TopK = ir.Ptr(int(v.Int()))
-	}
-
-	if v := root.Get("max_tokens"); v.Exists() {
-		req.MaxTokens = ir.Ptr(int(v.Int()))
-	} else if v := root.Get("max_output_tokens"); v.Exists() {
-		req.MaxTokens = ir.Ptr(int(v.Int()))
-	} else if v := root.Get("max_completion_tokens"); v.Exists() {
-		req.MaxTokens = ir.Ptr(int(v.Int()))
-	}
-
-	if v := root.Get("stop"); v.Exists() {
-		if v.IsArray() {
-			for _, s := range v.Array() {
-				req.StopSequences = append(req.StopSequences, s.String())
-			}
-		} else {
-			req.StopSequences = []string{v.String()}
-		}
-	}
-	if v := root.Get("frequency_penalty"); v.Exists() {
-		req.FrequencyPenalty = ir.Ptr(v.Float())
-	}
-	if v := root.Get("presence_penalty"); v.Exists() {
-		req.PresencePenalty = ir.Ptr(v.Float())
-	}
-	if v := root.Get("logprobs"); v.Exists() {
-		req.Logprobs = ir.Ptr(v.Bool())
-	}
-	if v := root.Get("top_logprobs"); v.Exists() {
-		req.TopLogprobs = ir.Ptr(int(v.Int()))
-	}
-	if v := root.Get("n"); v.Exists() {
-		req.CandidateCount = ir.Ptr(int(v.Int()))
-	}
+	ir.ApplyCommonParams(req, root)
+	ir.ApplyOpenAIExtendedParams(req, root)
 
 	if input := root.Get("input"); input.Exists() && !root.Get("messages").Exists() {
 		parseResponsesAPIFields(root, req)

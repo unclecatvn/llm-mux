@@ -13,11 +13,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/auth/login"
 	"github.com/nghyane/llm-mux/internal/buildinfo"
 	"github.com/nghyane/llm-mux/internal/config"
+	"github.com/nghyane/llm-mux/internal/provider"
 	"github.com/nghyane/llm-mux/internal/usage"
-	sdkAuth "github.com/nghyane/llm-mux/sdk/auth"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
+	"github.com/nghyane/llm-mux/internal/util"
 )
 
 type attemptInfo struct {
@@ -33,16 +34,18 @@ type Handler struct {
 	mu                  sync.Mutex
 	attemptsMu          sync.Mutex
 	failedAttempts      map[string]*attemptInfo // keyed by client IP
-	authManager         *coreauth.Manager
+	authManager         *provider.Manager
 	usageStats          *usage.RequestStatistics
-	tokenStore          coreauth.Store
+	tokenStore          provider.Store
 	localPassword       string
 	allowRemoteOverride bool
 	logDir              string
+	httpClient          *http.Client
+	httpClientOnce      sync.Once
 }
 
 // NewHandler creates a new management handler instance.
-func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Manager) *Handler {
+func NewHandler(cfg *config.Config, configFilePath string, manager *provider.Manager) *Handler {
 	// Check if MANAGEMENT_PASSWORD env is set to enable remote override
 	envSecret, _ := os.LookupEnv("MANAGEMENT_PASSWORD")
 	envSecret = strings.TrimSpace(envSecret)
@@ -53,7 +56,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		failedAttempts:      make(map[string]*attemptInfo),
 		authManager:         manager,
 		usageStats:          usage.GetRequestStatistics(),
-		tokenStore:          sdkAuth.GetTokenStore(),
+		tokenStore:          login.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 	}
 }
@@ -72,8 +75,15 @@ func (h *Handler) getConfig() *config.Config {
 	return h.cfg
 }
 
+func (h *Handler) getHTTPClient() *http.Client {
+	h.httpClientOnce.Do(func() {
+		h.httpClient = util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
+	})
+	return h.httpClient
+}
+
 // SetAuthManager updates the auth manager reference used by management endpoints.
-func (h *Handler) SetAuthManager(manager *coreauth.Manager) { h.authManager = manager }
+func (h *Handler) SetAuthManager(manager *provider.Manager) { h.authManager = manager }
 
 // SetUsageStatistics allows replacing the usage statistics reference.
 func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }

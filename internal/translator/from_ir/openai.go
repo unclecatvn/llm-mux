@@ -555,6 +555,9 @@ type openaiTextChunk struct {
 }
 
 func ToOpenAIChunkMeta(ev ir.UnifiedEvent, model, mid string, ci int, meta *ir.OpenAIMeta) ([]byte, error) {
+	if ev.Type == ir.EventTypeStreamMeta {
+		return nil, nil
+	}
 	rid, cr := mid, time.Now().Unix()
 	if meta != nil {
 		if meta.ResponseID != "" {
@@ -604,6 +607,11 @@ func ToOpenAIChunkMeta(ev ir.UnifiedEvent, model, mid string, ci int, meta *ir.O
 				tm["extra_content"] = map[string]any{"google": map[string]any{"thought_signature": string(ts)}}
 			}
 			c["delta"] = map[string]any{"role": "assistant", "tool_calls": []any{tm}}
+		}
+	case ir.EventTypeToolCallDelta:
+		if ev.ToolCall != nil {
+			tm := map[string]any{"index": ci, "function": map[string]any{"arguments": ev.ToolCall.Args}}
+			c["delta"] = map[string]any{"tool_calls": []any{tm}}
 		}
 	case ir.EventTypeImage:
 		if ev.Image != nil {
@@ -840,7 +848,8 @@ func NewResponsesStreamState() *ResponsesStreamState {
 }
 
 func formatResponsesSSE(et string, jb []byte) string {
-	var b strings.Builder
+	b := ir.GetStringBuilder()
+	defer ir.PutStringBuilder(b)
 	b.Grow(16 + len(et) + len(jb))
 	b.WriteString("event: ")
 	b.WriteString(et)
@@ -851,6 +860,9 @@ func formatResponsesSSE(et string, jb []byte) string {
 }
 
 func ToResponsesAPIChunk(ev ir.UnifiedEvent, model string, s *ResponsesStreamState) ([]string, error) {
+	if ev.Type == ir.EventTypeStreamMeta {
+		return nil, nil
+	}
 	if s.ResponseID == "" {
 		s.ResponseID, s.Created = fmt.Sprintf("resp_%d", time.Now().UnixNano()), time.Now().Unix()
 	}

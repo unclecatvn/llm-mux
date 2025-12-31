@@ -10,13 +10,13 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nghyane/llm-mux/internal/access"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/claude"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/gemini"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/ollama"
+	"github.com/nghyane/llm-mux/internal/api/handlers/format/openai"
 	"github.com/nghyane/llm-mux/internal/oauth"
-	sdkaccess "github.com/nghyane/llm-mux/sdk/access"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/claude"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/gemini"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/ollama"
-	"github.com/nghyane/llm-mux/sdk/api/handlers/openai"
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // setupRoutes configures the API routes for the server.
@@ -193,7 +193,7 @@ func (s *Server) conditionalAuthMiddleware() gin.HandlerFunc {
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,
 // it allows all requests (legacy behaviour).
-func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
+func AuthMiddleware(manager *access.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {
 			c.Next()
@@ -214,13 +214,13 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		}
 
 		// Allow requests without credentials (Ollama compatibility)
-		if errors.Is(err, sdkaccess.ErrNoCredentials) {
+		if errors.Is(err, access.ErrNoCredentials) {
 			c.Next()
 			return
 		}
 
 		switch {
-		case errors.Is(err, sdkaccess.ErrInvalidCredential):
+		case errors.Is(err, access.ErrInvalidCredential):
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
 		default:
 			log.Errorf("authentication middleware error: %v", err)

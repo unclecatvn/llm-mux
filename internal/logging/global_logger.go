@@ -1,17 +1,14 @@
 package logging
 
 import (
-	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nghyane/llm-mux/internal/util"
-	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -19,63 +16,30 @@ var (
 	setupOnce      sync.Once
 	writerMu       sync.Mutex
 	logWriter      *lumberjack.Logger
-	ginInfoWriter  *io.PipeWriter
-	ginErrorWriter *io.PipeWriter
+	ginInfoWriter  io.Writer
+	ginErrorWriter io.Writer
 )
 
-// LogFormatter defines a custom log format for logrus.
-// This formatter adds timestamp, level, and source location to each log entry.
-type LogFormatter struct{}
-
-// Format renders a single log entry with custom formatting.
-func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
-	var buffer *bytes.Buffer
-	if entry.Buffer != nil {
-		buffer = entry.Buffer
-	} else {
-		buffer = &bytes.Buffer{}
-	}
-
-	timestamp := entry.Time.Format("2006-01-02 15:04:05")
-	message := strings.TrimRight(entry.Message, "\r\n")
-
-	var formatted string
-	if entry.Caller != nil {
-		formatted = fmt.Sprintf("[%s] [%s] [%s:%d] %s\n", timestamp, entry.Level, filepath.Base(entry.Caller.File), entry.Caller.Line, message)
-	} else {
-		formatted = fmt.Sprintf("[%s] [%s] %s\n", timestamp, entry.Level, message)
-	}
-	buffer.WriteString(formatted)
-
-	return buffer.Bytes(), nil
-}
-
-// SetupBaseLogger configures the shared logrus instance and Gin writers.
-// It is safe to call multiple times; initialization happens only once.
 func SetupBaseLogger() {
 	setupOnce.Do(func() {
-		log.SetOutput(os.Stdout)
-		log.SetLevel(log.InfoLevel)
-		log.SetReportCaller(true)
-		log.SetFormatter(&LogFormatter{})
+		SetOutput(os.Stdout)
+		SetLevel(slog.LevelInfo)
+		SetReportCaller(true)
 
-		// Default to release mode; server.go will switch to debug if config.Debug is true
 		gin.SetMode(gin.ReleaseMode)
 
-		ginInfoWriter = log.StandardLogger().Writer()
+		ginInfoWriter = Writer()
 		gin.DefaultWriter = ginInfoWriter
-		ginErrorWriter = log.StandardLogger().WriterLevel(log.ErrorLevel)
+		ginErrorWriter = WriterLevel(slog.LevelError)
 		gin.DefaultErrorWriter = ginErrorWriter
 		gin.DebugPrintFunc = func(format string, values ...any) {
-			format = strings.TrimRight(format, "\r\n")
-			log.StandardLogger().Debugf(format, values...)
+			Debugf(format, values...)
 		}
 
-		log.RegisterExitHandler(closeLogOutputs)
+		RegisterExitHandler(closeLogOutputs)
 	})
 }
 
-// ConfigureLogOutput switches the global log destination between rotating files and stdout.
 func ConfigureLogOutput(loggingToFile bool) error {
 	SetupBaseLogger()
 
@@ -84,7 +48,7 @@ func ConfigureLogOutput(loggingToFile bool) error {
 
 	if loggingToFile {
 		logDir := "logs"
-		if base := util.WritablePath(); base != "" {
+		if base := writablePath(); base != "" {
 			logDir = filepath.Join(base, "logs")
 		}
 		if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -100,7 +64,7 @@ func ConfigureLogOutput(loggingToFile bool) error {
 			MaxAge:     0,
 			Compress:   false,
 		}
-		log.SetOutput(logWriter)
+		SetOutput(logWriter)
 		return nil
 	}
 
@@ -108,7 +72,7 @@ func ConfigureLogOutput(loggingToFile bool) error {
 		_ = logWriter.Close()
 		logWriter = nil
 	}
-	log.SetOutput(os.Stdout)
+	SetOutput(os.Stdout)
 	return nil
 }
 
@@ -119,13 +83,5 @@ func closeLogOutputs() {
 	if logWriter != nil {
 		_ = logWriter.Close()
 		logWriter = nil
-	}
-	if ginInfoWriter != nil {
-		_ = ginInfoWriter.Close()
-		ginInfoWriter = nil
-	}
-	if ginErrorWriter != nil {
-		_ = ginErrorWriter.Close()
-		ginErrorWriter = nil
 	}
 }

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	sdkaccess "github.com/nghyane/llm-mux/sdk/access"
-	sdkconfig "github.com/nghyane/llm-mux/sdk/config"
+	internalaccess "github.com/nghyane/llm-mux/internal/access"
+	"github.com/nghyane/llm-mux/internal/config"
 )
 
 var registerOnce sync.Once
@@ -15,7 +15,7 @@ var registerOnce sync.Once
 // Register ensures the config-access provider is available to the access manager.
 func Register() {
 	registerOnce.Do(func() {
-		sdkaccess.RegisterProvider(sdkconfig.AccessProviderTypeConfigAPIKey, newProvider)
+		internalaccess.RegisterProvider(config.AccessProviderTypeConfigAPIKey, newProvider)
 	})
 }
 
@@ -24,10 +24,10 @@ type provider struct {
 	keys map[string]struct{}
 }
 
-func newProvider(cfg *sdkconfig.AccessProvider, _ *sdkconfig.SDKConfig) (sdkaccess.Provider, error) {
+func newProvider(cfg *config.AccessProvider, _ *config.SDKConfig) (internalaccess.Provider, error) {
 	name := cfg.Name
 	if name == "" {
-		name = sdkconfig.DefaultAccessProviderName
+		name = config.DefaultAccessProviderName
 	}
 	keys := make(map[string]struct{}, len(cfg.APIKeys))
 	for _, key := range cfg.APIKeys {
@@ -41,17 +41,17 @@ func newProvider(cfg *sdkconfig.AccessProvider, _ *sdkconfig.SDKConfig) (sdkacce
 
 func (p *provider) Identifier() string {
 	if p == nil || p.name == "" {
-		return sdkconfig.DefaultAccessProviderName
+		return config.DefaultAccessProviderName
 	}
 	return p.name
 }
 
-func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.Result, error) {
+func (p *provider) Authenticate(_ context.Context, r *http.Request) (*internalaccess.Result, error) {
 	if p == nil {
-		return nil, sdkaccess.ErrNotHandled
+		return nil, internalaccess.ErrNotHandled
 	}
 	if len(p.keys) == 0 {
-		return nil, sdkaccess.ErrNotHandled
+		return nil, internalaccess.ErrNotHandled
 	}
 	authHeader := r.Header.Get("Authorization")
 	authHeaderGoogle := r.Header.Get("X-Goog-Api-Key")
@@ -63,7 +63,7 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		queryAuthToken = r.URL.Query().Get("auth_token")
 	}
 	if authHeader == "" && authHeaderGoogle == "" && authHeaderAnthropic == "" && queryKey == "" && queryAuthToken == "" {
-		return nil, sdkaccess.ErrNoCredentials
+		return nil, internalaccess.ErrNoCredentials
 	}
 
 	apiKey := extractBearerToken(authHeader)
@@ -84,7 +84,7 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			continue
 		}
 		if _, ok := p.keys[candidate.value]; ok {
-			return &sdkaccess.Result{
+			return &internalaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
 				Metadata: map[string]string{
@@ -94,7 +94,7 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		}
 	}
 
-	return nil, sdkaccess.ErrInvalidCredential
+	return nil, internalaccess.ErrInvalidCredential
 }
 
 func extractBearerToken(header string) string {

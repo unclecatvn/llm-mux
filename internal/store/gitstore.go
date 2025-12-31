@@ -18,7 +18,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
-	cliproxyauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
+	"github.com/nghyane/llm-mux/internal/provider"
 )
 
 // GitTokenStore persists token records and auth metadata using git as the backing storage.
@@ -212,7 +212,7 @@ func (s *GitTokenStore) EnsureRepository() error {
 }
 
 // Save persists token storage and metadata to the resolved auth file path.
-func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string, error) {
+func (s *GitTokenStore) Save(_ context.Context, auth *provider.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
@@ -296,7 +296,7 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 }
 
 // List enumerates all auth JSON files under the configured directory.
-func (s *GitTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error) {
+func (s *GitTokenStore) List(_ context.Context) ([]*provider.Auth, error) {
 	if err := s.EnsureRepository(); err != nil {
 		return nil, err
 	}
@@ -304,7 +304,7 @@ func (s *GitTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("auth filestore: directory not configured")
 	}
-	entries := make([]*cliproxyauth.Auth, 0)
+	entries := make([]*provider.Auth, 0)
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -409,7 +409,7 @@ func (s *GitTokenStore) resolveDeletePath(id string) (string, error) {
 	return filepath.Join(dir, id), nil
 }
 
-func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
+func (s *GitTokenStore) readAuthFile(path, baseDir string) (*provider.Auth, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
@@ -421,21 +421,21 @@ func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, 
 	if err = json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
 	}
-	provider, _ := metadata["type"].(string)
-	if provider == "" {
-		provider = "unknown"
+	providerName, _ := metadata["type"].(string)
+	if providerName == "" {
+		providerName = "unknown"
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 	id := s.idFor(path, baseDir)
-	auth := &cliproxyauth.Auth{
+	auth := &provider.Auth{
 		ID:               id,
-		Provider:         provider,
+		Provider:         providerName,
 		FileName:         id,
 		Label:            s.labelFor(metadata),
-		Status:           cliproxyauth.StatusActive,
+		Status:           provider.StatusActive,
 		Attributes:       map[string]string{"path": path},
 		Metadata:         metadata,
 		CreatedAt:        info.ModTime(),
@@ -460,7 +460,7 @@ func (s *GitTokenStore) idFor(path, baseDir string) string {
 	return rel
 }
 
-func (s *GitTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
+func (s *GitTokenStore) resolveAuthPath(auth *provider.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}

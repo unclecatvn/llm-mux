@@ -3,6 +3,9 @@
 ## Quick Start
 
 ```bash
+# Create auth directory for OAuth tokens
+mkdir -p auths
+
 docker run -d \
   --name llm-mux \
   -p 8317:8317 \
@@ -63,16 +66,17 @@ OAuth requires a browser. Options:
 **Option 1: Copy tokens from host**
 ```bash
 llm-mux --antigravity-login          # Login on host
+mkdir -p auths
 cp -r ~/.config/llm-mux/auth/* ./auths/
 ```
 
 **Option 2: API keys only** (no OAuth needed)
 ```yaml
-openai-compatibility:
-  - name: "openai"
+providers:
+  - type: openai
+    name: "openai"
     base-url: "https://api.openai.com/v1"
-    api-key-entries:
-      - api-key: "sk-..."
+    api-key: "sk-..."
     models:
       - name: "gpt-4o"
 ```
@@ -85,6 +89,15 @@ docker exec llm-mux ./llm-mux --init
 ---
 
 ## Build from Source
+
+### Using Helper Script
+
+```bash
+./scripts/docker-build.sh      # macOS/Linux
+./scripts/docker-build.ps1     # Windows
+```
+
+### Manual Build
 
 ```bash
 git clone https://github.com/nghyane/llm-mux.git && cd llm-mux

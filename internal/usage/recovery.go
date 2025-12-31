@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/nghyane/llm-mux/internal/logging"
 )
 
 // LoadRecordsFromDB loads usage statistics from the database using optimized SQL aggregation.

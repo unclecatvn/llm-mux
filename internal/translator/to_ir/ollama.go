@@ -7,7 +7,6 @@ import (
 	"github.com/nghyane/llm-mux/internal/translator/ir"
 )
 
-// ParseOllamaRequest parses incoming Ollama API request into unified format.
 func ParseOllamaRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 	root, err := ir.ParseAndValidateJSON(rawJSON)
 	if err != nil {
@@ -20,27 +19,11 @@ func ParseOllamaRequest(rawJSON []byte) (*ir.UnifiedChatRequest, error) {
 	}
 
 	if opts := root.Get("options"); opts.IsObject() {
-		if v := opts.Get("temperature"); v.Exists() {
-			req.Temperature = ir.Ptr(v.Float())
-		}
-		if v := opts.Get("top_p"); v.Exists() {
-			req.TopP = ir.Ptr(v.Float())
-		}
-		if v := opts.Get("top_k"); v.Exists() {
-			req.TopK = ir.Ptr(int(v.Int()))
-		}
-		if v := opts.Get("num_predict"); v.Exists() {
-			req.MaxTokens = ir.Ptr(int(v.Int()))
-		}
-		if v := opts.Get("stop"); v.Exists() {
-			if v.IsArray() {
-				for _, s := range v.Array() {
-					req.StopSequences = append(req.StopSequences, s.String())
-				}
-			} else {
-				req.StopSequences = []string{v.String()}
-			}
-		}
+		req.Temperature = ir.ExtractTemperature(opts)
+		req.TopP = ir.ExtractTopP(opts)
+		req.TopK = ir.ExtractTopK(opts)
+		req.MaxTokens = ir.ExtractMaxTokens(opts, "num_predict")
+		req.StopSequences = ir.ExtractStopSequences(opts, "stop")
 		if v := opts.Get("seed"); v.Exists() {
 			req.Metadata["ollama_seed"] = v.Int()
 		}

@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/nghyane/llm-mux/internal/auth/login"
 	"github.com/nghyane/llm-mux/internal/config"
-	sdkAuth "github.com/nghyane/llm-mux/sdk/auth"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
+	"github.com/nghyane/llm-mux/internal/provider"
+	log "github.com/nghyane/llm-mux/internal/logging"
 	"gopkg.in/yaml.v3"
 )
 
@@ -56,8 +56,8 @@ type Watcher struct {
 	lastAuthHashes    map[string]string
 	lastConfigHash    string
 	authQueue         chan<- AuthUpdate
-	currentAuths      map[string]*coreauth.Auth
-	runtimeAuths      map[string]*coreauth.Auth
+	currentAuths      map[string]*provider.Auth
+	runtimeAuths      map[string]*provider.Auth
 	dispatchMu        sync.Mutex
 	dispatchCond      *sync.Cond
 	pendingUpdates    map[string]AuthUpdate
@@ -114,7 +114,7 @@ const (
 type AuthUpdate struct {
 	Action AuthUpdateAction
 	ID     string
-	Auth   *coreauth.Auth
+	Auth   *provider.Auth
 }
 
 const (
@@ -138,7 +138,7 @@ func NewWatcher(configPath, authDir string, reloadCallback func(*config.Config))
 		lastAuthHashes: make(map[string]string),
 	}
 	w.dispatchCond = sync.NewCond(&w.dispatchMu)
-	if store := sdkAuth.GetTokenStore(); store != nil {
+	if store := login.GetTokenStore(); store != nil {
 		if persister, ok := store.(storePersister); ok {
 			w.storePersister = persister
 			log.Debug("persistence-capable token store detected; watcher will propagate persisted changes")

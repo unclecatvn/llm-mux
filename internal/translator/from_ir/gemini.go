@@ -1,4 +1,3 @@
-// Package from_ir converts unified request format to provider-specific formats.
 package from_ir
 
 import (
@@ -106,7 +105,18 @@ func (p *GeminiProvider) applyGenerationConfig(root map[string]any, req *ir.Unif
 		}
 	}
 
-	if v, ok := gc["maxOutputTokens"].(int); !ok || v < 1 {
+	currentMax := 0
+	switch v := gc["maxOutputTokens"].(type) {
+	case int:
+		currentMax = v
+	case int32:
+		currentMax = int(v)
+	case int64:
+		currentMax = int(v)
+	case float64:
+		currentMax = int(v)
+	}
+	if currentMax < 1 {
 		gc["maxOutputTokens"] = ir.DefaultMaxOutputTokens
 	}
 
@@ -267,9 +277,16 @@ func (p *GeminiProvider) buildAssistantAndToolParts(msg *ir.Message, toolIDToNam
 
 func (p *GeminiProvider) applyTools(root map[string]any, req *ir.UnifiedChatRequest) error {
 	tn := make(map[string]any)
+	hasFunctions := len(req.Tools) > 0
+
 	if req.Metadata != nil {
 		for k, meta := range map[string]string{ir.MetaGoogleSearch: "googleSearch", ir.MetaGoogleSearchRetrieval: "googleSearchRetrieval", ir.MetaCodeExecution: "codeExecution", ir.MetaURLContext: "urlContext", ir.MetaFileSearch: "fileSearch"} {
 			if v, ok := req.Metadata[k]; ok {
+				// Gemini API does not support mixing googleSearch/googleSearchRetrieval with functionDeclarations.
+				// When both are present, prioritize functionDeclarations (custom tools).
+				if hasFunctions && (k == ir.MetaGoogleSearch || k == ir.MetaGoogleSearchRetrieval) {
+					continue
+				}
 				if m, ok := v.(map[string]any); ok {
 					cleaned := map[string]any{}
 					for mk, mv := range m {
@@ -285,7 +302,7 @@ func (p *GeminiProvider) applyTools(root map[string]any, req *ir.UnifiedChatRequ
 		}
 	}
 
-	if len(req.Tools) > 0 {
+	if hasFunctions {
 		funcs := make([]any, len(req.Tools))
 		for i, t := range req.Tools {
 			params := ir.CleanJsonSchemaForGemini(ir.CopyMap(t.Parameters))
@@ -407,6 +424,9 @@ func ToGeminiResponseMeta(messages []ir.Message, usage *ir.Usage, model string, 
 }
 
 func ToGeminiChunk(event ir.UnifiedEvent, model string) ([]byte, error) {
+	if event.Type == ir.EventTypeStreamMeta {
+		return nil, nil
+	}
 	candidate := map[string]any{"content": map[string]any{"role": "model", "parts": []any{}}}
 	chunk := map[string]any{"candidates": []any{}, "modelVersion": model}
 	switch event.Type {
@@ -640,6 +660,10 @@ func (p *GeminiProvider) adjustMaxTokensForThinking(gc map[string]any, req *ir.U
 	case int:
 		cm = v
 	case int32:
+		cm = int(v)
+	case int64:
+		cm = int(v)
+	case float64:
 		cm = int(v)
 	default:
 		if req.MaxTokens != nil {

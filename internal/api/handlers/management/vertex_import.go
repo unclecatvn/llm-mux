@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nghyane/llm-mux/internal/auth/vertex"
-	coreauth "github.com/nghyane/llm-mux/sdk/cliproxy/auth"
+	"github.com/nghyane/llm-mux/internal/provider"
 )
 
 // ImportVertexCredential handles uploading a Vertex service account JSON and saving it as an auth record.
@@ -88,7 +88,7 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		"type":            "vertex",
 		"label":           label,
 	}
-	record := &coreauth.Auth{
+	record := &provider.Auth{
 		ID:       fileName,
 		Provider: "vertex",
 		FileName: fileName,
